@@ -58,7 +58,7 @@
       formatter.${system} = pkgs.nixfmt;
 
       checks.${system} = {
-        package = package;
+        inherit package;
         module-eval = import ./tests/nix/module-eval.nix {
           inherit pkgs nixpkgs self;
         };
