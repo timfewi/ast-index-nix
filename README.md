@@ -22,6 +22,9 @@ nix develop --command cargo build --release
 # Build or update the index for the current repository.
 target/release/ast-index index
 
+# Keep a subtree out of the index (gitignore-style, repeatable).
+target/release/ast-index index --exclude secrets/
+
 # Ask questions.
 ast-index status
 ast-index search parse

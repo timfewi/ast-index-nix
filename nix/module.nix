@@ -16,7 +16,10 @@ let
   cfg = config.services.astIndex;
   package = cfg.package;
   socketDirectory = builtins.dirOf cfg.socket;
-  indexFlag = lib.optionalString cfg.indexOnStart " --index";
+  exclusionFlags = lib.concatMapStrings (
+    pattern: " --exclude ${lib.escapeShellArg pattern}"
+  ) cfg.exclude;
+  indexFlag = lib.optionalString cfg.indexOnStart (" --index${exclusionFlags}");
 in
 {
   options.services.astIndex = {
@@ -64,6 +67,17 @@ in
       type = lib.types.bool;
       default = true;
       description = "Run one indexing pass before serving requests.";
+    };
+
+    exclude = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "secrets/" ];
+      description = ''
+        gitignore-style path patterns excluded from the index, relative to
+        {option}`root`. A pattern without a leading slash matches at any depth.
+        Only used when {option}`indexOnStart` is enabled.
+      '';
     };
 
     socketMode = lib.mkOption {

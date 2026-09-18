@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::{Instant, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
+use ignore::overrides::OverrideBuilder;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -30,6 +31,9 @@ pub struct IndexOptions {
     pub max_file_bytes: u64,
     /// Hard cap on recorded failure messages.
     pub max_failures: usize,
+    /// gitignore-style patterns excluded from the walk, relative to the root.
+    /// A pattern without a leading slash matches at any depth.
+    pub exclude: Vec<String>,
 }
 
 impl Default for IndexOptions {
@@ -38,6 +42,7 @@ impl Default for IndexOptions {
             force: false,
             max_file_bytes: 2 * 1024 * 1024,
             max_failures: 16,
+            exclude: Vec::new(),
         }
     }
 }
@@ -88,7 +93,7 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         failures: Vec::new(),
     };
 
-    let candidates = collect_candidates(&root, options, &mut stats);
+    let candidates = collect_candidates(&root, options, &mut stats)?;
     let existing: HashMap<String, _> = store.file_states()?.into_iter().collect();
 
     let mut present: HashSet<String> = HashSet::with_capacity(candidates.len());
@@ -181,11 +186,27 @@ fn collect_candidates(
     root: &Path,
     options: &IndexOptions,
     stats: &mut IndexStats,
-) -> Vec<Candidate> {
+) -> Result<Vec<Candidate>> {
+    // Exclusions are gitignore-style ignore patterns; everything else is walked.
+    let mut overrides = OverrideBuilder::new(root);
+    for pattern in &options.exclude {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        overrides.add(&format!("!{trimmed}")).map_err(|error| {
+            Error::Invalid(format!("invalid exclude pattern `{trimmed}`: {error}"))
+        })?;
+    }
+    let overrides = overrides
+        .build()
+        .map_err(|error| Error::Invalid(format!("invalid exclude patterns: {error}")))?;
+
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .parents(false)
         .require_git(false)
+        .overrides(overrides)
         .filter_entry(|entry| entry.file_name() != ".ast-index")
         .build();
 
@@ -229,7 +250,7 @@ fn collect_candidates(
             mtime_ns,
         });
     }
-    candidates
+    Ok(candidates)
 }
 
 fn index_one(

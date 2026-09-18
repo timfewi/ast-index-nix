@@ -28,6 +28,7 @@ a row is only complete when that check runs in `scripts/check fast`.
 | R21 | Nix package and NixOS module with socket service | done | `checks.module-eval`, `packages.default` build |
 | R22 | No network access and no LLM dependency at runtime | done | dependency review; only `tree-sitter`, `rusqlite`, `clap`, `serde`, `nix`, `ignore`, `blake3` |
 | R23 | Documented fast gate runs formatting, clippy, tests and Nix/Shell checks | done | `scripts/check fast` |
+| R24 | gitignore-style path exclusions keep configured subtrees out of the index | done | `integration::exclude_patterns_skip_subtrees` |
 
 ## Deliberately deferred
 

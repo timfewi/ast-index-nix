@@ -297,6 +297,28 @@ fn non_utf8_sources_are_indexed_lossily() {
 }
 
 #[test]
+fn exclude_patterns_skip_subtrees() {
+    let fixture = fixture();
+    let root = fixture.path();
+    std::fs::create_dir_all(root.join("secrets")).expect("secrets");
+    std::fs::write(
+        root.join("secrets/private.rs"),
+        "pub fn private_thing() {}\n",
+    )
+    .expect("write");
+
+    let stats = run_cli_json(root, &["index", "--exclude", "secrets/", "--json"]);
+    assert_eq!(stats["files_indexed"], Value::from(3));
+    let search = run_cli_json(root, &["search", "private_thing", "--json"]);
+    assert_eq!(search.as_array().expect("array").len(), 0);
+
+    // Without the exclusion the file is part of the index.
+    run_cli_json(root, &["index", "--force", "--json"]);
+    let search = run_cli_json(root, &["search", "private_thing", "--json"]);
+    assert_eq!(search.as_array().expect("array").len(), 1);
+}
+
+#[test]
 fn reports_not_indexed_with_exit_code_two() {
     let fixture = fixture();
     let output = run_cli(fixture.path(), &["search", "helper"]);

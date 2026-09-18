@@ -37,6 +37,9 @@ enum Command {
         /// Re-parse every file, ignoring size and mtime.
         #[arg(long)]
         force: bool,
+        /// gitignore-style path patterns to exclude (repeatable).
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
         /// Print the summary as JSON.
         #[arg(long)]
         json: bool,
@@ -106,6 +109,9 @@ enum Command {
         /// Lock file (default: the socket path with a .lock suffix).
         #[arg(long)]
         lock: Option<PathBuf>,
+        /// gitignore-style path patterns to exclude when indexing at startup.
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
         /// Index once at startup before serving.
         #[arg(long)]
         index: bool,
@@ -137,11 +143,15 @@ fn run(cli: Cli) -> ast_index::Result<()> {
         Command::Serve {
             socket,
             lock,
+            exclude,
             index,
         } => {
             let engine = Engine::open(&root, cli.db)?;
             if index {
-                let stats = engine.index(&IndexOptions::default())?;
+                let stats = engine.index(&IndexOptions {
+                    exclude,
+                    ..IndexOptions::default()
+                })?;
                 eprintln!("{}", report::index_text(&stats));
             }
             let server = RpcServer::new(engine);
@@ -164,9 +174,14 @@ fn run(cli: Cli) -> ast_index::Result<()> {
 
 fn run_query(engine: &Engine, command: Command) -> ast_index::Result<()> {
     match command {
-        Command::Index { force, json } => {
+        Command::Index {
+            force,
+            exclude,
+            json,
+        } => {
             let stats = engine.index(&IndexOptions {
                 force,
+                exclude,
                 ..IndexOptions::default()
             })?;
             print_json(&stats, json, || report::index_text(&stats))?;
