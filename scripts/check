@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-fast}" in
+  fast)
+    cargo fmt --all -- --check
+    cargo clippy --offline --all-targets --all-features -- -D warnings
+    cargo test --offline
+    nixfmt --check flake.nix nix/module.nix tests/nix/module-eval.nix
+    shellcheck scripts/check
+    ;;
+  *)
+    echo 'usage: bash scripts/check [fast]' >&2
+    exit 2
+    ;;
+esac

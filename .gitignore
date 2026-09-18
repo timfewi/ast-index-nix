@@ -1,0 +1,10 @@
+/target/
+/result
+/result-*
+/.direnv/
+/.old/
+/.notes/
+/.ast-index/
+*.sqlite
+*.sqlite-*
+*.sqlite3
