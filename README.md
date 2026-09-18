@@ -137,7 +137,8 @@ as a hint and read the file before editing.
 
 Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. The service
 holds an exclusive lock, so a second writer cannot open the same index, and the
-socket is created with mode `0660` inside a `0750` runtime directory.
+socket is created with mode `0600` inside a `0750` runtime directory, so only the
+service user can connect.
 
 ## Development
 

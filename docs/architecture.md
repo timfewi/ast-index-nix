@@ -75,7 +75,9 @@ already carry their protocol version in `params._meta` (the stateless
 2026-07-28 revision). The server keeps no session state, which makes both
 revisions equivalent to it.
 
-The socket is created with mode 0600 (0660 when a service group is configured)
+The socket is created with mode 0600 (owner-only) inside a private runtime
+directory, so only the service user can connect. That is also what the NixOS
+module uses, since service and harness run as the same user.
 inside a runtime directory that is not world-readable, mirroring the boundary
 used by the local research service: a sandboxed harness may be able to
 `connect(2)` to any visible socket, so only intended clients should see it.

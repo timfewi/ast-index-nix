@@ -79,12 +79,6 @@ in
         Only used when {option}`indexOnStart` is enabled.
       '';
     };
-
-    socketMode = lib.mkOption {
-      type = lib.types.str;
-      default = "0660";
-      description = "Permission bits of the socket.";
-    };
   };
 
   config = lib.mkIf cfg.enable {
