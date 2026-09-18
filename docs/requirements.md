@@ -29,6 +29,7 @@ a row is only complete when that check runs in `scripts/check fast`.
 | R22 | No network access and no LLM dependency at runtime | done | dependency review; only `tree-sitter`, `rusqlite`, `clap`, `serde`, `nix`, `ignore`, `blake3` |
 | R23 | Documented fast gate runs formatting, clippy, tests and Nix/Shell checks | done | `scripts/check fast` |
 | R24 | gitignore-style path exclusions keep configured subtrees out of the index | done | `integration::exclude_patterns_skip_subtrees` |
+| R25 | Service group is optional; an unset group uses the user's primary group | done | `checks.module-eval` (explicit group passed through, `Group=` absent when unset) |
 
 ## Deliberately deferred
 

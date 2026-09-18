@@ -52,9 +52,15 @@ in
     };
 
     group = lib.mkOption {
-      type = lib.types.str;
-      default = cfg.user;
-      description = "Group of the service process and of the socket directory.";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "users";
+      description = ''
+        Group of the service process and of the socket directory. Null lets
+        systemd use the user's primary group from the account database, which is
+        what NixOS normal users need: they are members of `users`, and a group
+        named after the user does not necessarily exist.
+      '';
     };
 
     socket = lib.mkOption {
@@ -91,7 +97,6 @@ in
       serviceConfig = {
         Type = "simple";
         User = cfg.user;
-        Group = cfg.group;
         ExecStart = "${package}/bin/ast-index --root ${cfg.root} serve --socket ${cfg.socket}${indexFlag}";
         RuntimeDirectory = "ast-index";
         RuntimeDirectoryMode = "0750";
@@ -108,7 +113,8 @@ in
           "${socketDirectory}"
         ];
         RestrictAddressFamilies = [ "AF_UNIX" ];
-      };
+      }
+      // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; };
     };
   };
 }
