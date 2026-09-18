@@ -120,8 +120,8 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
                 continue;
             }
 
-            let source = match std::fs::read_to_string(&candidate.absolute) {
-                Ok(source) => source,
+            let bytes = match std::fs::read(&candidate.absolute) {
+                Ok(bytes) => bytes,
                 Err(error) => {
                     stats.files_failed += 1;
                     record_failure(
@@ -132,7 +132,10 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
                     continue;
                 }
             };
-            let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+            // Hash the raw bytes; only the parser sees a lossy UTF-8 view, so a
+            // stray non-UTF-8 byte in a comment does not drop the whole file.
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let source = String::from_utf8_lossy(&bytes);
 
             if let Some(previous) = previous
                 && previous.hash == hash

@@ -283,6 +283,20 @@ pub fn call() {
 }
 
 #[test]
+fn non_utf8_sources_are_indexed_lossily() {
+    let fixture = fixture();
+    let root = fixture.path();
+    // A latin-1 byte in a comment must not drop the whole file.
+    let bytes = b"// caf\xe9 comment\npub fn latin1_symbol() {}\n";
+    std::fs::write(root.join("src/latin.rs"), bytes).expect("write");
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["files_failed"], Value::from(0));
+
+    let search = run_cli_json(root, &["search", "latin1_symbol", "--json"]);
+    assert_eq!(search.as_array().expect("array").len(), 1);
+}
+
+#[test]
 fn reports_not_indexed_with_exit_code_two() {
     let fixture = fixture();
     let output = run_cli(fixture.path(), &["search", "helper"]);

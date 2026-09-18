@@ -1,6 +1,8 @@
 //! AST extraction: run the per-language tag query and turn matches into
 //! definitions, call sites and imports.
 
+use std::collections::HashSet;
+
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::error::{Error, Result};
@@ -61,6 +63,8 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
     let mut cursor = QueryCursor::new();
     let mut symbols: Vec<ParsedSymbol> = Vec::new();
     let mut refs: Vec<ParsedRef> = Vec::new();
+    // Two patterns can match the same node; keep one definition per start byte.
+    let mut seen_symbols: HashSet<usize> = HashSet::new();
 
     let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
     while let Some(query_match) = matches.next() {
@@ -105,10 +109,7 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
             }
             let start_line = node.start_position().row as u32 + 1;
             let end_line = node.end_position().row as u32 + 1;
-            if symbols
-                .iter()
-                .any(|existing| existing.start_byte == node.start_byte() && existing.name == name)
-            {
+            if !seen_symbols.insert(node.start_byte()) {
                 continue;
             }
             symbols.push(ParsedSymbol {
@@ -210,22 +211,29 @@ fn is_container(kind: SymbolKind) -> bool {
 }
 
 /// Point each reference at the innermost definition that contains it.
+///
+/// AST node ranges are laminar (nested or disjoint), so a single sweep over
+/// references sorted by byte position with a stack of open symbols is enough:
+/// linear instead of a quadratic scan per reference.
 fn assign_enclosing(symbols: &[ParsedSymbol], refs: &mut [ParsedRef]) {
-    for reference in refs.iter_mut() {
-        let mut best: Option<&ParsedSymbol> = None;
-        for symbol in symbols {
-            if symbol.start_byte <= reference.byte && reference.byte < symbol.end_byte {
-                let is_tighter = best
-                    .map(|current| {
-                        symbol.end_byte - symbol.start_byte < current.end_byte - current.start_byte
-                    })
-                    .unwrap_or(true);
-                if is_tighter {
-                    best = Some(symbol);
-                }
+    let mut order: Vec<usize> = (0..refs.len()).collect();
+    order.sort_by_key(|&index| refs[index].byte);
+    let mut stack: Vec<usize> = Vec::new();
+    let mut cursor = 0usize;
+    for index in order {
+        let byte = refs[index].byte;
+        while cursor < symbols.len() && symbols[cursor].start_byte <= byte {
+            stack.push(cursor);
+            cursor += 1;
+        }
+        while let Some(&top) = stack.last() {
+            if symbols[top].end_byte <= byte {
+                stack.pop();
+            } else {
+                break;
             }
         }
-        reference.from_symbol = best.map(|symbol| symbol.name.clone());
+        refs[index].from_symbol = stack.last().map(|&top| symbols[top].name.clone());
     }
 }
 
