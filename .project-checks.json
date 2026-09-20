@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "name": "source-fast",
+      "argv": ["bash", "scripts/check", "fast"],
+      "requires": ["bash", "cargo", "rustfmt", "clippy-driver", "nixfmt", "shellcheck"],
+      "timeout_seconds": 1800,
+      "profiles": ["fast"]
+    }
+  ]
+}
