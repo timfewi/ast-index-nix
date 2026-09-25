@@ -14,12 +14,12 @@
 }:
 let
   cfg = config.services.astIndex;
-  package = cfg.package;
+  inherit (cfg) package;
   socketDirectory = builtins.dirOf cfg.socket;
   exclusionFlags = lib.concatMapStrings (
     pattern: " --exclude ${lib.escapeShellArg pattern}"
   ) cfg.exclude;
-  indexFlag = lib.optionalString cfg.indexOnStart (" --index${exclusionFlags}");
+  indexFlag = lib.optionalString cfg.indexOnStart " --index${exclusionFlags}";
 in
 {
   options.services.astIndex = {
