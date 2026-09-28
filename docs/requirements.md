@@ -22,8 +22,8 @@ a row is only complete when that check runs in `scripts/check fast`.
 | R15 | Notifications produce no response; parse errors use null id | done | `rpc::tests::notifications_get_no_response`, `rpc::tests::parse_errors_are_reported_with_null_id` |
 | R16 | Unknown tool is an invalid-params protocol error | done | `rpc::tests::unknown_tool_is_invalid_params` |
 | R17 | Persistent Unix socket service with an exclusive writer lock | done | `integration::socket_service_and_stdio_proxy_share_one_index` |
-| R18 | stdio↔socket proxy as the only harness-facing process | done | same test |
-| R19 | Output is capped so one call cannot flood the context | done | `report::MAX_LIST_LINES` used by every list renderer |
+| R18 | Byte-preserving stdio↔socket proxy as the only harness-facing process | done | `integration::socket_service_and_stdio_proxy_share_one_index`, `integration::socket_proxy_preserves_crlf_bytes` |
+| R19 | MCP frames are bounded at 1 MiB and tool text at 64 KiB | done | `integration::mcp_stdio_rejects_oversized_frame_and_serves_the_next_request`, `integration::socket_service_and_stdio_proxy_share_one_index`, `rpc::tests::tool_text_is_bounded_even_when_arguments_are_large` |
 | R20 | Index state is one SQLite file, WAL requested with rollback fallback | done | `Store::open` records `journal_mode` in `meta` |
 | R21 | Nix package and NixOS module with socket service | done | `checks.module-eval`, `packages.default` build |
 | R22 | No network access and no LLM dependency at runtime | done | dependency review; only `tree-sitter`, `rusqlite`, `clap`, `serde`, `nix`, `ignore`, `blake3` |

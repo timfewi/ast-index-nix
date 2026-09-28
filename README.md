@@ -99,7 +99,9 @@ explicit: run `ast-index index` once (or `serve --index`).
 | `impact` | transitive callers up to `depth` |
 
 `format: "json"` switches to JSON; `text` is the default because it is more
-token-efficient. Output is capped so one call cannot flood the model context.
+token-efficient. MCP request frames are limited to 1 MiB; an oversized frame
+gets an error and the next request can still be served. Tool result text is
+limited to 64 KiB in either format so one call cannot flood the model context.
 
 ## What it does and does not resolve
 

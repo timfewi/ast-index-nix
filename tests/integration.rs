@@ -1,7 +1,8 @@
 //! End-to-end tests: index a synthetic project, query it through the CLI, the
 //! stdio MCP adapter and the Unix socket service.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -480,8 +481,91 @@ fn socket_service_and_stdio_proxy_share_one_index() {
         .expect("text");
     assert!(text.contains("files: 3"), "status text: {text}");
 
+    let input = child.stdin.as_mut().expect("proxy stdin");
+    input
+        .write_all(&vec![b'x'; 1_048_577])
+        .expect("write oversized socket frame");
+    input
+        .write_all(b"\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+        .expect("write socket ping");
+    input.flush().expect("flush proxy stdin");
+    let rejected: Value = serde_json::from_str(&read_line(&mut reader)).expect("rejection");
+    assert_eq!(rejected["error"]["code"], -32600);
+    let ping: Value = serde_json::from_str(&read_line(&mut reader)).expect("ping");
+    assert_eq!(ping["id"], 2);
+    assert_eq!(ping["result"], serde_json::json!({}));
+
     drop(child.stdin.take());
     let _ = child.wait();
     let _ = service.kill();
     let _ = service.wait();
+}
+
+#[test]
+fn socket_proxy_preserves_crlf_bytes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let socket = directory.path().join("echo.sock");
+    let listener = UnixListener::bind(&socket).expect("bind echo socket");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept proxy");
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).expect("read proxy bytes");
+        stream.write_all(&received).expect("echo proxy bytes");
+        received
+    });
+
+    let mut child = Command::new(binary())
+        .arg("mcp")
+        .arg("--socket")
+        .arg(&socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let payload = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\r\n";
+    child
+        .stdin
+        .take()
+        .expect("proxy stdin")
+        .write_all(payload)
+        .expect("write proxy bytes");
+    let output = child.wait_with_output().expect("wait for proxy");
+    assert!(output.status.success(), "proxy failed: {output:?}");
+    assert_eq!(server.join().expect("echo server"), payload);
+    assert_eq!(output.stdout, payload);
+}
+
+#[test]
+fn mcp_stdio_rejects_oversized_frame_and_serves_the_next_request() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(binary())
+        .arg("--root")
+        .arg(directory.path())
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn stdio server");
+    let mut input = child.stdin.take().expect("server stdin");
+    input
+        .write_all(&vec![b'x'; 1_048_577])
+        .expect("write oversized frame");
+    input
+        .write_all(b"\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+        .expect("write next request");
+    drop(input);
+
+    let output = child.wait_with_output().expect("wait for server");
+    assert!(output.status.success(), "server failed: {output:?}");
+    let responses: Vec<Value> = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("JSON-RPC response"))
+        .collect();
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["error"]["code"], -32600);
+    assert_eq!(responses[0]["id"], Value::Null);
+    assert_eq!(responses[1]["id"], 2);
+    assert_eq!(responses[1]["result"], serde_json::json!({}));
 }

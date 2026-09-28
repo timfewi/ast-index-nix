@@ -25,6 +25,8 @@ pub const LATEST_PROTOCOL: &str = "2026-07-28";
 pub const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-11-25", "2026-07-28"];
 /// Tool name exposed to agents.
 pub const EXPLORE_TOOL: &str = "code_explore";
+/// Maximum agent-facing text in one tool result, regardless of output format.
+pub const MAX_TOOL_TEXT_BYTES: usize = 64 * 1024;
 
 /// Guidance returned to clients during `initialize`. Kept short because clients
 /// truncate server instructions (Claude Code at 2 KB) and Codex only guarantees
@@ -151,28 +153,29 @@ impl RpcServer {
             Ok(args) => args,
             Err(message) => return Err(error_value(-32602, &message)),
         };
-        match self.run(&args) {
-            Ok(text) => Ok(json!({
-                "content": [ { "type": "text", "text": text } ],
-                "isError": false
-            })),
+        let (mut text, mut is_error) = match self.run(&args) {
+            Ok(text) => (text, false),
             // Not-indexed is deliberately not an error: an `isError` reply early
             // in a session teaches the agent that the tool is broken.
-            Err(Error::NotIndexed(message)) => Ok(json!({
-                "content": [ { "type": "text", "text": message } ],
-                "isError": false
-            })),
-            Err(Error::Invalid(message)) => Ok(json!({
-                "content": [ { "type": "text", "text": message } ],
-                "isError": true
-            })),
-            Err(other) => Ok(json!({
-                "content": [ { "type": "text", "text": format!(
+            Err(Error::NotIndexed(message)) => (message, false),
+            Err(Error::Invalid(message)) => (message, true),
+            Err(other) => (
+                format!(
                     "Tool execution failed: {other}. Retry the call once; if it persists, continue without ast-index."
-                ) } ],
-                "isError": true
-            })),
+                ),
+                true,
+            ),
+        };
+        if text.len() > MAX_TOOL_TEXT_BYTES {
+            text = format!(
+                "Tool result exceeds {MAX_TOOL_TEXT_BYTES} bytes; narrow the query or choose a smaller file."
+            );
+            is_error = true;
         }
+        Ok(json!({
+            "content": [ { "type": "text", "text": text } ],
+            "isError": is_error
+        }))
     }
 
     fn run(&self, args: &ExploreArgs) -> crate::error::Result<String> {
@@ -469,5 +472,22 @@ mod tests {
         let value: Value = serde_json::from_str(&response).expect("json");
         assert_eq!(value["error"]["code"], json!(-32700));
         assert_eq!(value["id"], Value::Null);
+    }
+
+    #[test]
+    fn tool_text_is_bounded_even_when_arguments_are_large() {
+        let server = unindexed_server();
+        let response = server.handle(&json!({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {
+                "name": EXPLORE_TOOL,
+                "arguments": { "action": "x".repeat(70_000) }
+            }
+        }));
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.len() <= 65_536, "tool text was {} bytes", text.len());
+        assert_eq!(response["result"]["isError"], json!(true));
     }
 }

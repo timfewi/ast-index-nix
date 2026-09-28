@@ -78,10 +78,10 @@ revisions equivalent to it.
 
 The socket is created with mode 0600 (owner-only) inside a private runtime
 directory, so only the service user can connect. That is also what the NixOS
-module uses, since service and harness run as the same user.
-inside a runtime directory that is not world-readable, mirroring the boundary
-used by the local research service: a sandboxed harness may be able to
-`connect(2)` to any visible socket, so only intended clients should see it.
+module uses, since service and harness run as the same user. The proxy forwards
+bytes unchanged and flushes each read so responses remain interactive. Both
+server transports retain at most 1 MiB per request frame and drain larger
+frames before serving the next request. Tool result text is capped at 64 KiB.
 
 ## Trust boundary
 

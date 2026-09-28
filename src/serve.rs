@@ -6,7 +6,7 @@
 //! local research service. The service holds an exclusive `flock` so a second
 //! writer cannot open the same index, and the socket lives at mode 0600.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,74 @@ use nix::fcntl::{Flock, FlockArg};
 
 use crate::error::{Error, Result};
 use crate::rpc::RpcServer;
+
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const OVERSIZED_FRAME_RESPONSE: &str = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"request frame exceeds 1048576 bytes\"}}";
+
+enum Frame {
+    Line(String),
+    TooLarge,
+}
+
+/// Drain the whole line, but retain at most one bounded JSON-RPC frame.
+fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Frame>> {
+    let mut bytes = Vec::new();
+    let mut too_large = false;
+    let mut saw_data = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if !saw_data {
+                return Ok(None);
+            }
+            break;
+        }
+        saw_data = true;
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |position| position + 1);
+        let body = &available[..newline.unwrap_or(consumed)];
+        if !too_large {
+            if body.len() > MAX_FRAME_BYTES.saturating_sub(bytes.len()) {
+                too_large = true;
+                bytes.clear();
+            } else {
+                bytes.extend_from_slice(body);
+            }
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if too_large {
+        return Ok(Some(Frame::TooLarge));
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    let line = String::from_utf8(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(Some(Frame::Line(line)))
+}
+
+fn frame_response(server: &RpcServer, frame: Frame) -> Option<String> {
+    match frame {
+        Frame::Line(line) => server.handle_line(&line),
+        Frame::TooLarge => Some(OVERSIZED_FRAME_RESPONSE.to_string()),
+    }
+}
+
+fn copy_flushed(mut reader: impl Read, mut writer: impl Write) -> io::Result<()> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        writer.write_all(&buffer[..count])?;
+        writer.flush()?;
+    }
+}
 
 /// Options for the socket service.
 #[derive(Debug, Clone)]
@@ -27,10 +95,10 @@ pub struct ServeOptions {
 /// Run the blocking stdio MCP loop until stdin closes.
 pub fn run_stdio(server: &RpcServer) -> Result<()> {
     let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
     let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|error| Error::io("<stdin>", error))?;
-        if let Some(response) = server.handle_line(&line) {
+    while let Some(frame) = read_frame(&mut reader).map_err(|error| Error::io("<stdin>", error))? {
+        if let Some(response) = frame_response(server, frame) {
             writeln!(stdout, "{response}").map_err(|error| Error::io("<stdout>", error))?;
             stdout
                 .flush()
@@ -87,15 +155,14 @@ pub fn run_socket(server: RpcServer, options: &ServeOptions) -> Result<()> {
 }
 
 fn serve_connection(stream: UnixStream, server: &Arc<Mutex<RpcServer>>) -> Result<()> {
-    let reader = BufReader::new(stream.try_clone().map_err(|e| Error::io("<socket>", e))?);
+    let mut reader = BufReader::new(stream.try_clone().map_err(|e| Error::io("<socket>", e))?);
     let mut writer = stream;
-    for line in reader.lines() {
-        let line = line.map_err(|error| Error::io("<socket>", error))?;
+    while let Some(frame) = read_frame(&mut reader).map_err(|error| Error::io("<socket>", error))? {
         let response = {
             let server = server
                 .lock()
                 .map_err(|_| Error::Invalid("service lock poisoned".to_string()))?;
-            server.handle_line(&line)
+            frame_response(&server, frame)
         };
         if let Some(response) = response {
             writer
@@ -119,35 +186,22 @@ pub fn run_proxy(socket: &Path) -> Result<()> {
         .try_clone()
         .map_err(|error| Error::io(socket, error))?;
 
-    let reader_thread = std::thread::spawn(move || {
-        let reader = BufReader::new(read_stream);
+    let reader_thread = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut reader = read_stream;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            if out.write_all(line.as_bytes()).is_err() || out.write_all(b"\n").is_err() {
-                break;
-            }
-            if out.flush().is_err() {
-                break;
-            }
-        }
+        copy_flushed(&mut reader, &mut out)
     });
 
     let stdin = std::io::stdin();
     let mut writer = stream;
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        writer
-            .write_all(line.as_bytes())
-            .map_err(|error| Error::io(socket, error))?;
-        writer
-            .write_all(b"\n")
-            .map_err(|error| Error::io(socket, error))?;
-        writer.flush().map_err(|error| Error::io(socket, error))?;
-    }
+    let transfer = copy_flushed(&mut stdin.lock(), &mut writer);
     // stdin closed: stop reading from the service as well.
     let _ = writer.shutdown(std::net::Shutdown::Write);
-    let _ = reader_thread.join();
+    let output = reader_thread
+        .join()
+        .map_err(|_| Error::Invalid("proxy output thread panicked".to_string()))?;
+    transfer.map_err(|error| Error::io(socket, error))?;
+    output.map_err(|error| Error::io("<stdout>", error))?;
     Ok(())
 }
