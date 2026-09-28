@@ -29,7 +29,7 @@ bash scripts/check fast
 ```
 src/lang.rs      language registry: extension -> grammar + tag query
 src/parse.rs     tag query execution, nesting, enclosing definition
-src/index.rs     walk, prefilter, hash, transaction
+src/index.rs     walk, hash, transaction
 src/resolve.rs   precision-first scope ladder
 src/store.rs     SQLite schema and queries
 src/engine.rs    shared query operations

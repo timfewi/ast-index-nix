@@ -23,8 +23,9 @@ One library, three frontends, one database.
 - `src/parse.rs` — runs the tag query, produces definitions and references,
   computes nesting (parent/qualified names) and the enclosing definition per
   reference.
-- `src/index.rs` — incremental walk (`ignore`), `size`/`mtime_ns` prefilter,
-  BLAKE3 content hash as correctness guarantee, then a single write transaction.
+- `src/index.rs` — incremental walk (`ignore`), BLAKE3 hash of each candidate
+  for change detection, then a single write transaction. Unchanged content is
+  not re-parsed.
 - `src/resolve.rs` — name-based, precision-first scope ladder.
 - `src/store.rs` — SQLite schema and queries, including a recursive CTE for
   `impact`.

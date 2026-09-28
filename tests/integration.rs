@@ -232,6 +232,47 @@ fn reindexing_is_incremental_and_removes_deleted_files() {
 }
 
 #[test]
+fn reindexing_detects_content_changes_with_unchanged_size_and_mtime() {
+    let fixture = fixture();
+    let root = fixture.path();
+    let path = root.join("src/other.rs");
+    run_cli(root, &["index"]);
+
+    let original = std::fs::metadata(&path).expect("original metadata");
+    let content = std::fs::read_to_string(&path).expect("original content");
+    std::fs::write(&path, content.replace("entry", "begin")).expect("changed content");
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("open changed file");
+    file.set_modified(original.modified().expect("original mtime"))
+        .expect("restore mtime");
+    drop(file);
+    let changed = std::fs::metadata(&path).expect("changed metadata");
+    assert_eq!(changed.len(), original.len());
+    assert_eq!(
+        changed.modified().expect("changed mtime"),
+        original.modified().expect("original mtime")
+    );
+
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["files_indexed"], Value::from(1));
+    assert!(
+        run_cli_json(root, &["search", "entry", "--json"])
+            .as_array()
+            .expect("entries")
+            .is_empty()
+    );
+    assert_eq!(
+        run_cli_json(root, &["search", "begin", "--json"])
+            .as_array()
+            .expect("begins")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn ambiguous_names_stay_unresolved() {
     let fixture = fixture();
     let root = fixture.path();

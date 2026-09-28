@@ -1,8 +1,8 @@
 //! Incremental indexing: walk a root, parse changed files, resolve references.
 //!
-//! The scan uses `size` + `mtime_ns` as a cheap prefilter and a content hash as
-//! the correctness guarantee, so a file whose mtime moved but whose bytes did
-//! not is not re-parsed. Watchers are intentionally not part of the core:
+//! The scan hashes every candidate to detect changes even when size and mtime
+//! are unchanged. Files whose bytes did not change are not re-parsed. Watchers
+//! are intentionally not part of the core:
 //! correctness must not depend on inotify, which is non-recursive, loses events
 //! on overflow and does not see network filesystems.
 
@@ -25,7 +25,7 @@ use crate::store::{RefInsert, Store, SymbolInsert, now_unix};
 /// Options for one indexing pass.
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
-    /// Re-parse every file even when size and mtime match.
+    /// Re-parse every file even when its content hash matches.
     pub force: bool,
     /// Files larger than this are skipped.
     pub max_file_bytes: u64,
@@ -114,17 +114,6 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
 
         for candidate in &candidates {
             let previous = existing.get(&candidate.relative);
-            let unchanged = !options.force
-                && previous
-                    .map(|state| {
-                        state.size == candidate.size && state.mtime_ns == candidate.mtime_ns
-                    })
-                    .unwrap_or(false);
-            if unchanged {
-                stats.files_unchanged += 1;
-                continue;
-            }
-
             let bytes = match std::fs::read(&candidate.absolute) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -140,16 +129,19 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
             // Hash the raw bytes; only the parser sees a lossy UTF-8 view, so a
             // stray non-UTF-8 byte in a comment does not drop the whole file.
             let hash = blake3::hash(&bytes).to_hex().to_string();
-            let source = String::from_utf8_lossy(&bytes);
 
             if let Some(previous) = previous
+                && !options.force
                 && previous.hash == hash
             {
-                store.touch_file(&candidate.relative, candidate.size, candidate.mtime_ns)?;
+                if previous.size != candidate.size || previous.mtime_ns != candidate.mtime_ns {
+                    store.touch_file(&candidate.relative, candidate.size, candidate.mtime_ns)?;
+                }
                 stats.files_unchanged += 1;
                 continue;
             }
 
+            let source = String::from_utf8_lossy(&bytes);
             match index_one(store, candidate, &source, &hash) {
                 Ok((symbol_count, reference_count)) => {
                     stats.files_indexed += 1;

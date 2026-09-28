@@ -8,7 +8,7 @@ a row is only complete when that check runs in `scripts/check fast`.
 | R01 | Index definitions, call sites and imports for Rust, Python, TypeScript, TSX and JavaScript | done | `parse::tests::*`, `every_tag_query_compiles_for_its_grammar` |
 | R02 | Definitions carry kind, line range, parent and qualified name | done | `parse::tests::rust_extracts_definitions_calls_and_imports` |
 | R03 | References carry the enclosing definition and the call line | done | `parse::tests::python_extracts_classes_methods_and_calls` |
-| R04 | Incremental indexing: unchanged files are not parsed | done | `integration::reindexing_is_incremental_and_removes_deleted_files` |
+| R04 | Incremental indexing: unchanged files are not parsed, including after mtime drift; changed bytes are detected even with unchanged size and mtime | done | `integration::reindexing_is_incremental_and_removes_deleted_files`, `integration::reindexing_detects_content_changes_with_unchanged_size_and_mtime` |
 | R05 | mtime-only drift with identical content is not reparsed | done | same test (BLAKE3 hash branch) |
 | R06 | Deleted files leave the index | done | same test |
 | R07 | Ambiguous names stay unresolved instead of guessing | done | `resolve::tests::ambiguous_names_stay_unresolved`, `integration::ambiguous_names_stay_unresolved` |
