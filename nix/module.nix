@@ -10,16 +10,20 @@
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
   cfg = config.services.astIndex;
   inherit (cfg) package;
   socketDirectory = builtins.dirOf cfg.socket;
-  exclusionFlags = lib.concatMapStrings (
-    pattern: " --exclude ${lib.escapeShellArg pattern}"
-  ) cfg.exclude;
-  indexFlag = lib.optionalString cfg.indexOnStart " --index${exclusionFlags}";
+  indexArgs = lib.optionals cfg.indexOnStart (
+    [ "--index" ]
+    ++ lib.concatMap (pattern: [
+      "--exclude"
+      pattern
+    ]) cfg.exclude
+  );
 in
 {
   options.services.astIndex = {
@@ -97,7 +101,17 @@ in
       serviceConfig = {
         Type = "simple";
         User = cfg.user;
-        ExecStart = "${package}/bin/ast-index --root ${cfg.root} serve --socket ${cfg.socket}${indexFlag}";
+        ExecStart = utils.escapeSystemdExecArgs (
+          [
+            "${package}/bin/ast-index"
+            "--root"
+            cfg.root
+            "serve"
+            "--socket"
+            cfg.socket
+          ]
+          ++ indexArgs
+        );
         RuntimeDirectory = "ast-index";
         RuntimeDirectoryMode = "0750";
         UMask = "0007";

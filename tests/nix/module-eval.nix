@@ -28,14 +28,27 @@ let
     }).config;
   explicit = mkConfig { group = "root"; };
   implicit = mkConfig { };
+  escaped = mkConfig {
+    root = "/var/lib/ast index%root";
+    socket = "/run/ast-index/my socket%";
+    exclude = [
+      "private notes/*"
+      "literal%$"
+    ];
+  };
   explicitService = explicit.systemd.services.ast-index;
   implicitService = implicit.systemd.services.ast-index;
+  escapedExec = escaped.systemd.services.ast-index.serviceConfig.ExecStart;
 in
 if
   explicit.services.astIndex.enable
   && explicitService.serviceConfig.User == "root"
   && explicitService.serviceConfig.Group == "root"
   && !(implicitService.serviceConfig ? Group)
+  && nixpkgs.lib.hasInfix ''"--root" "/var/lib/ast index%%root"'' escapedExec
+  && nixpkgs.lib.hasInfix ''"--socket" "/run/ast-index/my socket%%"'' escapedExec
+  && nixpkgs.lib.hasInfix ''"--exclude" "private notes/*"'' escapedExec
+  && nixpkgs.lib.hasInfix ''"--exclude" "literal%%$$"'' escapedExec
 then
   pkgs.runCommand "ast-index-module-eval" { } ''
     touch "$out"
