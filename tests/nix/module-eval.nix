@@ -42,6 +42,9 @@ let
 in
 if
   explicit.services.astIndex.enable
+  && explicit.services.astIndex.package.system == system
+  && explicit.services.astIndex.package == self.packages.${system}.default
+  && builtins.elem explicit.services.astIndex.package explicit.environment.systemPackages
   && explicitService.serviceConfig.User == "root"
   && explicitService.serviceConfig.Group == "root"
   && !(implicitService.serviceConfig ? Group)

@@ -77,7 +77,7 @@ With the NixOS module the same is configured declaratively:
 ```nix
 services.astIndex = {
   enable = true;
-  root = "/home/agent/project";
+  root = "/srv/ast-index/project";
   user = "coding-agent";
   socket = "/run/ast-index/socket";
   indexOnStart = true;

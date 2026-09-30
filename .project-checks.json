@@ -4,7 +4,7 @@
     {
       "name": "source-fast",
       "argv": ["bash", "scripts/check", "fast"],
-      "requires": ["bash", "cargo", "rustfmt", "clippy-driver", "nixfmt", "shellcheck"],
+      "requires": ["bash", "cargo", "rustfmt", "clippy-driver", "nix", "deadnix", "nixfmt", "statix", "shellcheck"],
       "timeout_seconds": 1800,
       "profiles": ["fast"]
     }

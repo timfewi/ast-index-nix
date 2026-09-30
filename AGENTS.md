@@ -43,7 +43,9 @@ nix develop --command bash scripts/check fast
 
 It runs formatting, clippy with `-D warnings`, the unit tests, the end-to-end
 integration tests (CLI, stdio MCP, socket service and proxy) and the Nix/Shell
-format checks. Regression tests belong next to the bug they lock down.
+format checks. It also runs deadnix/statix and evaluates the package and module
+outputs for both Linux systems with `nix flake check --all-systems --no-build`.
+Regression tests belong next to the bug they lock down.
 
 ## Privacy
 

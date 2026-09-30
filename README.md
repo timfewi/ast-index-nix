@@ -14,6 +14,10 @@ The design mirrors a local research service: the index lives in a daemon behind 
 socket, and every harness talks to the same warm index through a tiny proxy.
 There is no telemetry, no network access and no LLM dependency.
 
+The Nix package, development shell, formatter and module checks export
+`x86_64-linux` and `aarch64-linux`. The service module selects the native package
+for the consuming host.
+
 ## Quick start
 
 ```bash
@@ -123,19 +127,30 @@ as a hint and read the file before editing.
 
 ## NixOS service
 
+Declare and lock the input in the consuming flake:
+
 ```nix
+inputs.ast-index.url = "github:timfewi/ast-index-nix";
+```
+
+Pass `inputs` through the consuming configuration's `specialArgs`, then import
+a host module such as:
+
+```nix
+{ inputs, ... }:
 {
-  inputs.ast-index.url = "git+https://github.com/timfewi/ast-index-nix.git?ref=main";
-  # ...
   imports = [ inputs.ast-index.nixosModules.default ];
   services.astIndex = {
     enable = true;
-    root = "/home/agent/project";
+    root = "/srv/ast-index/project";
     user = "coding-agent";
     socket = "/run/ast-index/socket";
   };
 }
 ```
+
+The consuming host creates the service account and supplies an existing root
+directory writable by that account.
 
 Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. The service
 holds an exclusive lock, so a second writer cannot open the same index, and the
@@ -155,7 +170,28 @@ nix develop --command bash scripts/check fast
 ```
 
 `scripts/check fast` runs `cargo fmt --check`, `clippy -D warnings`, the full
-test suite (unit and integration) plus `nixfmt --check` and `shellcheck`.
+test suite (unit and integration), deadnix/statix, `nixfmt --check`, shellcheck,
+and all-system flake evaluation without building the package or system closure.
 
 Source, comments and documentation are in English. Runtime state and
 credentials never enter the repository; the index is local and gitignored.
+
+## Portability checkpoint (2026-09-30)
+
+- Both Linux package, shell, formatter and module-check outputs evaluated
+  without package builds. Module checks assert the native default package and
+  its installation. Nixpkgs and Cargo locks are unchanged, as is the existing
+  x86 package derivation.
+- The pinned fast gate passed with the existing Cargo cache: 18 unit tests,
+  11 CLI/MCP/socket integration tests, Clippy, all format/lint checks and
+  all-system flake evaluation. The initial missing ARM package was reproduced
+  before the output change. ARM binary execution remains unrun.
+- The toolbox's documented `extraPackages` module evaluated with this AST
+  package and the public `project-check` pin
+  `f70de45d69b9ca9a31f5b9f94e316ac6e43e514e` on both systems, without builds or
+  host activation.
+- Tracked source privacy coverage completed with no credential findings. Two
+  address-pattern review findings are Tree-sitter captures in comments
+  (`src/lang.rs`, `src/model.rs`), not contact addresses; they remain visible in
+  the report. Synthetic home-directory examples now use a service-owned path.
+  Git history and untracked runtime state were excluded.

@@ -42,7 +42,7 @@ in
 
     root = lib.mkOption {
       type = lib.types.path;
-      example = "/home/agent/project";
+      example = "/srv/ast-index/project";
       description = "Directory to index. The index is stored in <root>/.ast-index.";
     };
 

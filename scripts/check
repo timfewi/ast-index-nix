@@ -6,8 +6,11 @@ case "${1:-fast}" in
     cargo fmt --all -- --check
     cargo clippy --offline --all-targets --all-features -- -D warnings
     cargo test --offline
+    deadnix --fail .
+    statix check .
     nixfmt --check flake.nix nix/module.nix tests/nix/module-eval.nix
     shellcheck scripts/check
+    nix flake check --all-systems --no-build --no-write-lock-file
     ;;
   *)
     echo 'usage: bash scripts/check [fast]' >&2
