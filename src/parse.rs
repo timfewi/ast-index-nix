@@ -9,6 +9,8 @@ use crate::error::{Error, Result};
 use crate::lang::LangSpec;
 use crate::model::{RefKind, SymbolKind};
 
+mod nix;
+
 /// A definition found in one file, with byte ranges used for nesting.
 #[derive(Debug, Clone)]
 pub struct ParsedSymbol {
@@ -20,7 +22,7 @@ pub struct ParsedSymbol {
     pub end_byte: usize,
     /// Name of the innermost enclosing definition, if any.
     pub parent: Option<String>,
-    /// `parent::name` when nested, otherwise `name`.
+    /// Full `parent::name` chain when nested, otherwise `name`.
     pub qualified: String,
 }
 
@@ -28,13 +30,13 @@ pub struct ParsedSymbol {
 #[derive(Debug, Clone)]
 pub struct ParsedRef {
     pub name: String,
-    /// Full scoped path for calls like `Store::open`, used for a qualified-first
-    /// resolution attempt before falling back to the bare name.
+    /// Full scoped path for calls like `Store::open`, or a statically visible
+    /// Nix binding's qualified name. Nix calls without a target stay unresolved.
     pub path: Option<String>,
     pub kind: RefKind,
     pub line: u32,
     pub byte: usize,
-    /// Name of the innermost enclosing definition, if any.
+    /// Qualified name of the innermost enclosing definition, if any.
     pub from_symbol: Option<String>,
 }
 
@@ -63,6 +65,7 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
     let mut cursor = QueryCursor::new();
     let mut symbols: Vec<ParsedSymbol> = Vec::new();
     let mut refs: Vec<ParsedRef> = Vec::new();
+    let mut nix_calls = Vec::new();
     // Two patterns can match the same node; keep one definition per start byte.
     let mut seen_symbols: HashSet<usize> = HashSet::new();
 
@@ -103,7 +106,14 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
         };
 
         if let Some((kind, node)) = definition {
-            let name = text.to_string();
+            let (name, kind) = if spec.id == "nix" {
+                let Some(name) = nix::static_name(name_node, source) else {
+                    continue;
+                };
+                (name, nix::binding_kind(node))
+            } else {
+                (text.to_string(), kind)
+            };
             if name.is_empty() {
                 continue;
             }
@@ -123,7 +133,14 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
                 qualified: String::new(),
             });
         } else if let Some((kind, _node)) = reference {
-            let name = normalize_reference_name(kind, text);
+            let name = if spec.id == "nix" && kind == RefKind::Import {
+                let Some(name) = nix::literal_import(name_node, source) else {
+                    continue;
+                };
+                name
+            } else {
+                normalize_reference_name(kind, text)
+            };
             if name.is_empty() {
                 continue;
             }
@@ -143,11 +160,24 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
                 byte: name_node.start_byte(),
                 from_symbol: None,
             });
+            if spec.id == "nix" && kind == RefKind::Call {
+                nix_calls.push((refs.len() - 1, name_node));
+            }
         }
     }
 
     assign_nesting(&mut symbols);
     assign_enclosing(&symbols, &mut refs);
+    for (index, node) in nix_calls {
+        if let Some(binding) = nix::local_binding(node, &refs[index].name, source) {
+            refs[index].path = symbols
+                .iter()
+                .find(|symbol| {
+                    symbol.start_byte == binding.start_byte() && symbol.kind == SymbolKind::Function
+                })
+                .map(|symbol| symbol.qualified.clone());
+        }
+    }
 
     Ok(ParsedFile { symbols, refs })
 }
@@ -190,8 +220,8 @@ fn assign_nesting(symbols: &mut [ParsedSymbol]) {
             symbols[index].kind = SymbolKind::Method;
         }
         symbols[index].parent = parent.clone();
-        symbols[index].qualified = match parent {
-            Some(parent) => format!("{parent}::{}", symbols[index].name),
+        symbols[index].qualified = match parent_index {
+            Some(top) => format!("{}::{}", symbols[top].qualified, symbols[index].name),
             None => symbols[index].name.clone(),
         };
         stack.push(index);
@@ -233,7 +263,7 @@ fn assign_enclosing(symbols: &[ParsedSymbol], refs: &mut [ParsedRef]) {
                 break;
             }
         }
-        refs[index].from_symbol = stack.last().map(|&top| symbols[top].name.clone());
+        refs[index].from_symbol = stack.last().map(|&top| symbols[top].qualified.clone());
     }
 }
 
@@ -255,6 +285,158 @@ mod tests {
                 panic!("{} tag query is invalid: {error}", spec.id);
             }
         }
+    }
+
+    #[test]
+    fn nix_extracts_bindings_functions_and_literal_imports() {
+        let source = r#"
+let
+  helper = x: y: x + y;
+  build = { value, ... }: helper value 2;
+  tools = {
+    render = (text: helper text 1);
+    nested = { run = arg: helper arg 2; };
+  };
+  imported = import ./helper.nix;
+  builtin = builtins.import "./other.nix";
+in {
+  outputs = args@{ self, ... }: { result = build { value = 1; }; };
+  services.nginx.enable = true;
+  "quoted" = 1;
+  ${"dynamic"} = false;
+  "${dynamic}" = false;
+  imports = [ ./module.nix <nixpkgs/nixos> "./literal.nix" ./modules/${name}.nix ];
+  inherit plain;
+  inherit (external) inherited "quoted-inherit";
+}
+"#;
+        let parsed = parse_lang("nix", source);
+        let symbol = |name: &str| {
+            parsed
+                .symbols
+                .iter()
+                .find(|s| s.name == name)
+                .expect("Nix symbol")
+        };
+        assert_eq!(symbol("helper").kind, SymbolKind::Function);
+        assert_eq!(
+            (symbol("helper").start_line, symbol("helper").end_line),
+            (3, 3)
+        );
+        assert_eq!(symbol("build").kind, SymbolKind::Function);
+        assert_eq!(symbol("outputs").kind, SymbolKind::Function);
+        assert_eq!(symbol("tools").kind, SymbolKind::Module);
+        assert_eq!(symbol("render").kind, SymbolKind::Function);
+        assert_eq!(symbol("render").parent.as_deref(), Some("tools"));
+        assert_eq!(symbol("run").qualified, "tools::nested::run");
+        assert_eq!(symbol("services.nginx.enable").kind, SymbolKind::Const);
+        assert_eq!(symbol("quoted").kind, SymbolKind::Const);
+        for name in ["plain", "inherited", "quoted-inherit"] {
+            assert_eq!(symbol(name).kind, SymbolKind::Const);
+        }
+        assert!(!parsed.symbols.iter().any(|s| s.name.contains("dynamic")));
+
+        let helper_calls: Vec<_> = parsed.refs.iter().filter(|r| r.name == "helper").collect();
+        assert_eq!(
+            helper_calls.len(),
+            3,
+            "curried calls have one named call site"
+        );
+        assert!(
+            helper_calls
+                .iter()
+                .all(|r| r.path.as_deref() == Some("helper"))
+        );
+        assert!(
+            helper_calls
+                .iter()
+                .any(|r| r.from_symbol.as_deref() == Some("tools::nested::run"))
+        );
+        let imports: Vec<_> = parsed
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Import)
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                "./helper.nix",
+                "./other.nix",
+                "./module.nix",
+                "<nixpkgs/nixos>",
+                "./literal.nix"
+            ]
+        );
+    }
+
+    #[test]
+    fn nix_call_targets_respect_recursive_and_nested_let_scopes() {
+        let parsed = parse_lang(
+            "nix",
+            r#"
+let
+  helper = x: x;
+  run = x: let helper = y: y + 1; in (helper) x;
+in rec {
+  local = x: x;
+  result = run (local 1);
+}
+"#,
+        );
+        let targets: Vec<_> = parsed
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Call)
+            .map(|r| (r.name.as_str(), r.path.as_deref(), r.from_symbol.as_deref()))
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                ("helper", Some("run::helper"), Some("run")),
+                ("run", Some("run"), Some("result")),
+                ("local", Some("local"), Some("result")),
+            ]
+        );
+    }
+
+    #[test]
+    fn nix_dynamic_shadowed_and_external_calls_stay_unresolved() {
+        for source in [
+            "{ helper = x: x; run = x: helper x; }",
+            "let helper = x: x; in helper: helper 1",
+            "let helper = x: x; in { helper, ... }: helper 1",
+            "let helper = x: x; in helper@{ ... }: helper 1",
+            "let helper = x: x; in let inherit (external) helper; in helper 1",
+            "let helper = x: x; in let inherit (external) ${name}; in helper 1",
+            "let helper = x: x; in let helper = external; in helper 1",
+            "let helper = x: x; in with external; helper 1",
+            "let helper = x: x; in lib.helper 1",
+            "let helper = x: x; in let ${name} = x: x; in helper 1",
+        ] {
+            let parsed = parse_lang("nix", source);
+            assert!(!parsed.refs.is_empty(), "missing call: {source}");
+            assert!(
+                parsed.refs.iter().all(|r| r.path.is_none()),
+                "guessed target: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn nix_dynamic_imports_are_not_reported_as_literal_paths() {
+        let parsed = parse_lang(
+            "nix",
+            r#"
+{ name, ... }: {
+  one = import ./modules/${name}.nix;
+  two = import "./modules/${name}.nix";
+  three = import name;
+  imports = [ ./modules/${name}.nix "./modules/${name}.nix" name ];
+}
+"#,
+        );
+        assert!(!parsed.refs.iter().any(|r| r.kind == RefKind::Import));
     }
 
     #[test]
@@ -311,7 +493,7 @@ pub fn build_store() -> Store {
             .iter()
             .find(|r| r.kind == RefKind::Call && r.name == "record")
             .expect("record call");
-        assert_eq!(record_call.from_symbol.as_deref(), Some("insert"));
+        assert_eq!(record_call.from_symbol.as_deref(), Some("Store::insert"));
 
         let imports: Vec<&str> = parsed
             .refs
@@ -357,7 +539,7 @@ def main():
             .iter()
             .find(|r| r.kind == RefKind::Call && r.name == "render")
             .expect("render call");
-        assert_eq!(render_call.from_symbol.as_deref(), Some("hello"));
+        assert_eq!(render_call.from_symbol.as_deref(), Some("Greeter::hello"));
     }
 
     #[test]

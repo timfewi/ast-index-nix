@@ -29,6 +29,7 @@ bash scripts/check fast
 ```
 src/lang.rs      language registry: extension -> grammar + tag query
 src/parse.rs     tag query execution, nesting, enclosing definition
+src/parse/nix.rs static Nix extraction and local lexical call targets
 src/index.rs     walk, hash, transaction
 src/resolve.rs   precision-first scope ladder
 src/store.rs     SQLite schema and queries
@@ -62,8 +63,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
 2. Add a `LangSpec` entry and a tag query in `src/lang.rs`.
 3. Run the tests: `every_tag_query_compiles_for_its_grammar` fails on a bad query
    and the language-specific test shows what is extracted.
-4. Update the requirements table and README coverage, and add a fixture assertion
-   if the language has a distinctive construct.
+4. Update the requirements table, README and `.tabula/ENTRY.md` coverage, and add
+   a fixture assertion if the language has a distinctive construct.
 
 ## Index state
 

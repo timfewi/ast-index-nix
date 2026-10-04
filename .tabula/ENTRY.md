@@ -8,6 +8,8 @@ CLI, stdio MCP or Unix-socket frontends. No network or model dependency.
 - [src/lang.rs](../src/lang.rs): supported language registry and tree-sitter tag queries.
 - [src/index.rs](../src/index.rs) + [src/parse.rs](../src/parse.rs): enumerate source, parse definitions, references
   and imports; reuse unchanged content and remove deleted files.
+- [src/parse/nix.rs](../src/parse/nix.rs): static Nix names/imports, binding kinds
+  and conservative same-file lexical call targets; no evaluation or import following.
 - [src/resolve.rs](../src/resolve.rs): resolve call edges by name and scope. Ambiguous matches stay
   unresolved; an external qualified path must not fall back to a local name.
 - [src/store.rs](../src/store.rs): SQLite persistence under .ast-index/index.sqlite.
@@ -24,9 +26,12 @@ callees and impact actions. CLI refs is not a separate MCP action.
 Index refresh is explicit: `ast-index index` or the workspace index command.
 Query roots and databases can be selected with --root and --db.
 
-Languages: Rust, Python, TypeScript/TSX and JavaScript.
-**Nix is not structurally indexed.** Use current flake files, module imports
-and focused source reads for NixOS relationships.
+Languages: Rust, Python, TypeScript/TSX, JavaScript and Nix.
+Nix indexes static bindings and inherited attributes, named lambdas, nested
+attribute sets and literal imports. Call edges require unique, visible same-file
+functions in `let` or recursive attribute scopes. Selected, dynamic, inherited
+and cross-file targets stay unresolved; use focused source reads for relationships
+beyond that coverage.
 Edges are navigation hints: dynamic dispatch, reflection, macros, generated
 code, re-exports and language-specific indirection are not fully resolved.
 Confirm consequential findings in current source, especially after edits.

@@ -101,6 +101,165 @@ fn run_cli_json(root: &Path, args: &[&str]) -> Value {
 }
 
 #[test]
+fn same_named_nested_functions_keep_distinct_callers() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        r#"
+pub fn helper() {}
+mod left { pub fn run() { crate::helper(); } }
+mod right { pub fn run() { crate::helper(); } }
+"#,
+    )
+    .expect("lib.rs");
+    run_cli_json(root, &["index", "--json"]);
+    let callers = run_cli_json(root, &["callers", "helper", "--json"]);
+    let names: Vec<_> = callers
+        .as_array()
+        .expect("callers")
+        .iter()
+        .filter_map(|edge| edge["caller"].as_str())
+        .collect();
+    assert_eq!(names, ["left::run", "right::run"]);
+}
+
+#[test]
+fn nix_ambiguous_qualified_targets_stay_unresolved() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path();
+    std::fs::write(
+        root.join("ambiguous.nix"),
+        r#"
+let helper = x: x;
+in [ (let helper = x: x + 1; in helper 1) (helper 2) ]
+"#,
+    )
+    .expect("ambiguous.nix");
+    run_cli_json(root, &["index", "--json"]);
+    let refs = run_cli_json(root, &["refs", "ambiguous.nix", "--json"]);
+    let refs = refs.as_array().expect("refs");
+    assert_eq!(refs.len(), 2);
+    assert!(refs.iter().all(|r| r["resolved"].is_null()));
+}
+
+#[test]
+fn nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path();
+    std::fs::write(
+        root.join("flake.nix"),
+        r#"
+let
+  nix_helper = x: y: x + y;
+in {
+  left = { run = x: nix_helper x 1; };
+  right = { run = x: nix_helper x 2; };
+  shadow = nix_helper: nix_helper 1;
+  selected = x: lib.nix_helper x;
+  external = x: remote x;
+  imports = [ ./module.nix ];
+}
+"#,
+    )
+    .expect("flake.nix");
+    std::fs::write(root.join("module.nix"), "{ remote = x: x; }").expect("module.nix");
+    std::fs::write(root.join("lib.rs"), "pub fn rust_entry() { nix_helper(); }").expect("lib.rs");
+
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["files_indexed"], 3);
+    assert_eq!(stats["files_failed"], 0);
+    let status = run_cli_json(root, &["status", "--json"]);
+    let nix = status["languages"]
+        .as_array()
+        .expect("languages")
+        .iter()
+        .find(|language| language["language"] == "nix")
+        .expect("Nix coverage");
+    assert_eq!(nix["files"], 2);
+    let outline = run_cli_json(root, &["outline", "flake.nix", "--json"]);
+    assert!(
+        outline
+            .as_array()
+            .expect("outline")
+            .iter()
+            .any(|s| s["qualified"] == "right::run")
+    );
+    let callers = run_cli_json(root, &["callers", "nix_helper", "--json"]);
+    let names: Vec<_> = callers
+        .as_array()
+        .expect("callers")
+        .iter()
+        .filter_map(|edge| edge["caller"].as_str())
+        .collect();
+    assert_eq!(names, ["left::run", "right::run"]);
+    assert!(
+        callers
+            .as_array()
+            .expect("callers")
+            .iter()
+            .all(|edge| edge["confidence"] == "exact")
+    );
+    let callees = run_cli_json(root, &["callees", "right::run", "--json"]);
+    assert_eq!(callees[0]["callee"], "nix_helper");
+    let impact = run_cli_json(root, &["impact", "nix_helper", "--json"]);
+    assert_eq!(impact.as_array().expect("impact").len(), 2);
+    for name in ["shadow", "selected", "external", "rust_entry"] {
+        let callees = run_cli_json(root, &["callees", name, "--json"]);
+        assert!(
+            callees.as_array().expect("callees").is_empty(),
+            "guessed target for {name}"
+        );
+    }
+    let references = run_cli_json(root, &["refs", "flake.nix", "--json"]);
+    assert!(
+        references
+            .as_array()
+            .expect("refs")
+            .iter()
+            .any(|r| r["kind"] == "import" && r["name"] == "./module.nix")
+    );
+
+    // Nix extraction uses the same stored outline through MCP.
+    let mut child = Command::new(binary())
+        .arg("--root")
+        .arg(root)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    send(
+        &mut child,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code_explore","arguments":{"action":"outline","file":"flake.nix"}}}"#,
+    );
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+    let response: Value = serde_json::from_str(&read_line(&mut reader)).expect("MCP response");
+    assert_eq!(response["result"]["isError"], false);
+    assert!(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("outline text")
+            .contains("right::run")
+    );
+    drop(child.stdin.take());
+    assert!(child.wait().expect("MCP exit").success());
+
+    // The new language participates in the existing incremental update/removal path.
+    let unchanged = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(unchanged["files_unchanged"], 3);
+    std::fs::write(root.join("module.nix"), "{ renamed = x: x; }").expect("change Nix source");
+    let changed = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(changed["files_indexed"], 1);
+    let found = run_cli_json(root, &["search", "renamed", "--json"]);
+    assert_eq!(found.as_array().expect("search").len(), 1);
+    std::fs::remove_file(root.join("module.nix")).expect("remove Nix source");
+    let removed = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(removed["files_removed"], 1);
+}
+
+#[test]
 fn indexes_and_answers_structural_queries() {
     let fixture = fixture();
     let root = fixture.path();

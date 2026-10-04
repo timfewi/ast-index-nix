@@ -5,7 +5,7 @@ a row is only complete when that check runs in `scripts/check fast`.
 
 | ID | Requirement | Status | Evidence |
 | --- | --- | --- | --- |
-| R01 | Index definitions, call sites and imports for Rust, Python, TypeScript, TSX and JavaScript | done | `parse::tests::*`, `every_tag_query_compiles_for_its_grammar` |
+| R01 | Index definitions, call sites and imports for Rust, Python, TypeScript, TSX, JavaScript and Nix | done | `parse::tests::*`, `every_tag_query_compiles_for_its_grammar`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets` |
 | R02 | Definitions carry kind, line range, parent and qualified name | done | `parse::tests::rust_extracts_definitions_calls_and_imports` |
 | R03 | References carry the enclosing definition and the call line | done | `parse::tests::python_extracts_classes_methods_and_calls` |
 | R04 | Incremental indexing: unchanged files are not parsed, including after mtime drift; changed bytes are detected even with unchanged size and mtime | done | `integration::reindexing_is_incremental_and_removes_deleted_files`, `integration::reindexing_detects_content_changes_with_unchanged_size_and_mtime` |
@@ -30,6 +30,9 @@ a row is only complete when that check runs in `scripts/check fast`.
 | R23 | Documented fast gate runs formatting, clippy, tests and Nix/Shell checks | done | `scripts/check fast` |
 | R24 | gitignore-style path exclusions keep configured subtrees out of the index | done | `integration::exclude_patterns_skip_subtrees` |
 | R25 | Service group is optional; an unset group uses the user's primary group | done | `checks.module-eval` (explicit group passed through, `Group=` absent when unset) |
+| R26 | Nix static bindings and inherited attributes, nested qualified names, named lambdas, curried call sites and literal module imports | done | `parse::tests::nix_extracts_bindings_functions_and_literal_imports`, `lang::tests::detects_nix_files_case_insensitively` |
+| R27 | Nix calls resolve only to unique, statically visible same-file functions; shadowed, dynamic, selected and cross-file calls remain unresolved | done | `parse::tests::nix_call_targets_respect_recursive_and_nested_let_scopes`, `parse::tests::nix_dynamic_shadowed_and_external_calls_stay_unresolved`, `parse::tests::nix_dynamic_imports_are_not_reported_as_literal_paths`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets`, `integration::nix_ambiguous_qualified_targets_stay_unresolved` |
+| R28 | Same-named nested definitions keep distinct reference owners through full qualified chains | done | `integration::same_named_nested_functions_keep_distinct_callers`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets` |
 
 ## Deliberately deferred
 
@@ -52,3 +55,8 @@ a row is only complete when that check runs in `scripts/check fast`.
   path aliases or `require()` indirection.
 - Python decorators are not represented as definitions; the decorated function
   is.
+- Nix does not evaluate expressions or follow imports. Calls through attributes,
+  aliases, `inherit`, `with`, parameters and other files stay unresolved. Dynamic
+  attribute names and interpolated import paths are not static definitions or
+  literal imports. Function values hidden behind other expressions are not
+  inferred.

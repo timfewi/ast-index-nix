@@ -27,6 +27,7 @@ pub struct FileState {
 #[derive(Debug, Clone)]
 pub struct RefRow {
     pub id: i64,
+    pub language: String,
     pub file: String,
     pub directory: String,
     pub name: String,
@@ -39,6 +40,7 @@ pub struct RefRow {
 #[derive(Debug, Clone)]
 pub struct SymbolRow {
     pub id: i64,
+    pub language: String,
     pub file: String,
     pub directory: String,
     pub name: String,
@@ -470,12 +472,13 @@ impl Store {
     /// Candidate symbols for reference resolution.
     pub fn resolution_symbols(&self) -> Result<Vec<SymbolRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT s.id, f.path, s.name, s.qualified FROM symbols s JOIN files f ON f.id = s.file_id",
+            "SELECT s.id, f.path, s.name, s.qualified, f.lang FROM symbols s JOIN files f ON f.id = s.file_id",
         )?;
         let rows = statement.query_map([], |row| {
             let file: String = row.get(1)?;
             Ok(SymbolRow {
                 id: row.get(0)?,
+                language: row.get(4)?,
                 directory: directory_of(&file),
                 file,
                 name: row.get::<_, String>(2)?.to_lowercase(),
@@ -488,7 +491,7 @@ impl Store {
     /// Call and import references that still need resolution.
     pub fn resolution_refs(&self) -> Result<Vec<RefRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT r.id, f.path, r.name, r.kind, r.path
+            "SELECT r.id, f.path, r.name, r.kind, r.path, f.lang
              FROM refs r JOIN files f ON f.id = r.file_id
              WHERE r.kind = 'call' AND r.resolved_symbol_id IS NULL",
         )?;
@@ -496,6 +499,7 @@ impl Store {
             let file: String = row.get(1)?;
             Ok(RefRow {
                 id: row.get(0)?,
+                language: row.get(5)?,
                 directory: directory_of(&file),
                 file,
                 name: row.get::<_, String>(2)?.to_lowercase(),

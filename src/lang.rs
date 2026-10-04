@@ -35,6 +35,10 @@ pub const ALL: &[LangSpec] = &[
         id: "javascript",
         extensions: &["js", "mjs", "cjs", "jsx"],
     },
+    LangSpec {
+        id: "nix",
+        extensions: &["nix"],
+    },
 ];
 
 impl LangSpec {
@@ -52,6 +56,7 @@ impl LangSpec {
                 }
             }
             "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+            "nix" => tree_sitter_nix::LANGUAGE.into(),
             other => unreachable!("unsupported language id {other}"),
         }
     }
@@ -63,6 +68,7 @@ impl LangSpec {
             "python" => PYTHON_TAGS,
             "typescript" | "tsx" => TYPESCRIPT_TAGS,
             "javascript" => JAVASCRIPT_TAGS,
+            "nix" => NIX_TAGS,
             other => unreachable!("unsupported language id {other}"),
         }
     }
@@ -147,3 +153,41 @@ const JAVASCRIPT_TAGS: &str = r#"
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
 (import_statement source: (string) @name) @reference.import
 "#;
+
+// Nix bindings are classified from their value by the parser. Only statically
+// named bindings and literal imports are retained; no Nix code is evaluated.
+const NIX_TAGS: &str = r#"
+(binding attrpath: (attrpath) @name) @definition.const
+(inherited_attrs attr: [(identifier) (string_expression)] @name @definition.const)
+(apply_expression function: (variable_expression name: (identifier) @name)) @reference.call
+(apply_expression function: (select_expression) @name) @reference.call
+(apply_expression function: (parenthesized_expression expression: [(variable_expression) (select_expression)] @name)) @reference.call
+((apply_expression
+  function: (variable_expression name: (identifier) @_import)
+  argument: [(path_expression) (spath_expression) (string_expression)] @name) @reference.import
+ (#eq? @_import "import"))
+((apply_expression
+  function: (select_expression
+    expression: (variable_expression name: (identifier) @_builtins)
+    attrpath: (attrpath . (identifier) @_import .))
+  argument: [(path_expression) (spath_expression) (string_expression)] @name) @reference.import
+ (#eq? @_builtins "builtins")
+ (#eq? @_import "import"))
+((binding
+  attrpath: (attrpath . (identifier) @_imports .)
+  expression: (list_expression element: [(path_expression) (spath_expression) (string_expression)] @name)) @reference.import
+ (#eq? @_imports "imports"))
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_nix_files_case_insensitively() {
+        for path in ["flake.nix", "modules/service.nix", "MODULE.NIX"] {
+            assert_eq!(detect(Path::new(path)), by_id("nix"));
+        }
+        assert_eq!(by_id("nix").expect("Nix language").family(), "nix");
+    }
+}

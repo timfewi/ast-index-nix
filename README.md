@@ -110,8 +110,8 @@ limited to 64 KiB in either format so one call cannot flood the model context.
 ## What it does and does not resolve
 
 Extraction uses tree-sitter tag queries and covers Rust, Python, TypeScript,
-TSX and JavaScript. Call edges are resolved by name with a precision-first scope
-ladder:
+TSX, JavaScript and Nix. Call edges are resolved by name with a precision-first
+scope ladder:
 
 1. exactly one match in the same file → `exact`,
 2. exactly one match in the same directory → `high`,
@@ -124,6 +124,18 @@ they never collapse onto a same-named local method. External paths such as
 would be a guess. Dynamic dispatch, macros, reflection, generated code and
 same-named methods reached through a value are **not** resolved. Treat every edge
 as a hint and read the file before editing.
+
+Nix outlines include static `let` and attribute bindings, dotted attribute paths,
+named lambdas (including formal argument sets), and nested attribute sets.
+Static `inherit` attributes are also listed. Bindings use the existing
+`function`, `module` and `const` kinds. Literal `import`, `builtins.import` and
+`imports = [ ... ]` paths are recorded without following them. Curried
+applications contribute one named call site.
+Nix call edges only link a unique, directly defined function visible in the same
+file's `let` or recursive attribute scope. Parameters, aliases, inherited values,
+selected calls (`lib.mkIf`), dynamic attributes, `with` and cross-file targets
+remain unresolved. Nix is never evaluated and paths with interpolation are not
+reported as literal imports.
 
 ## NixOS service
 
@@ -201,7 +213,22 @@ credentials never enter the repository; the index is local and gitignored.
 Added a source-linked `.tabula/ENTRY.md` and freshness receipt; the workspace
 overview owns cross-repository relationships. The guide now loads detailed
 documents according to the task. Source review confirmed the language registry,
-resolution and transport boundaries; the card explicitly excludes structural
-Nix support. Tabula freshness and Markdown/TOON fixture parity passed. No Rust
-implementation changed, so its unchanged test suite was not rerun for this
-documentation change. Native context comparisons live in coding-agents-nix.
+resolution and transport boundaries. Tabula freshness and Markdown/TOON fixture
+parity passed. No Rust implementation changed, so its unchanged test suite was
+not rerun for this documentation change. Native context comparisons live in
+coding-agents-nix.
+
+## Development checkpoint — 2026-10-04 (Nix AST)
+
+Implemented pinned Nix grammar/tag queries, static binding/import extraction and
+conservative lexical call targets. Nested reference owners now use full
+qualified names, with a reproduced Rust regression and Nix ambiguity/shadowing
+coverage. The pinned fast gate passed: 23 unit tests, 14 integration tests,
+formatting, Clippy, Nix/Shell lint and both Linux output evaluations.
+All 66 existing workspace indexes were refreshed with `target/debug/ast-index`,
+with no file failures; the shared index reports 1,013 Nix files and 43,769 Nix
+symbols. Nix status/outline queries were verified through the live MCP service.
+The local refresh receipt is in the ignored `target/index-refresh-report.json`.
+The installed service still uses the previous package. Future index refreshes
+need the new binary; deploy the updated package through the consuming flake to
+retain Nix coverage across service restarts.

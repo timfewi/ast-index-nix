@@ -75,3 +75,23 @@ the checkout lives. The root itself is recorded in `meta` for `status`.
 case where several harnesses should share one warm index and one writer lock. It
 is optional because a per-session server is simpler and avoids orphaned daemons;
 the proxy is a plain byte pipe so there is no second protocol implementation.
+
+## D09 — Static Nix structure, local lexical call edges
+
+Nix support uses the pinned tree-sitter grammar and the existing query surface.
+Static bindings are definitions, syntactic lambda values are functions and
+attribute sets are modules. Imports are literal syntax records; no expression
+is evaluated and no import is followed.
+
+The existing file/directory/global name ladder is too broad for Nix: a function
+argument, nonrecursive attribute or imported value can share a local function's
+name. The parser therefore selects only directly defined functions visible in
+`let` or recursive attribute scopes, and the resolver requires a unique
+same-file qualified target. Parameters, `inherit`, `with`, dynamic bindings,
+aliases, attribute selections and cross-file targets remain unresolved. Nix
+definitions are excluded from other languages' broader resolution maps.
+
+Full qualified chains also identify reference owners, so nested same-named
+functions do not share a caller ID. Duplicate qualified owner names remain
+unattached. This reuses the existing schema and symbol kinds, with no new tool,
+execution authority or database migration.

@@ -1,20 +1,23 @@
 {
   "version": 1,
-  "entry_sha256": "4a5534e23135fc0f137448d7e5cb0cf0e9cc575b00f551550deceb86e20d73e6",
+  "entry_sha256": "934ec7e0668579fcacaaa07992b6865f08ee856f81a3ac90facd76cdc27dc6d7",
   "sources": {
     ".project-checks.json": "4d13b5ca28110321cd987afa4fce6ea7d2ceea12a00714eca296d3f59bf83088",
     "flake.nix": "6a38a4b88c3b87eeb14d0f0df921203e077e6422b5e875b1277b9ba714bdfd35",
     "scripts/check": "48789394fb5b9be7b1c595ea0fe492336465d6e5543b4f5432475d791dfccaea",
     "src/engine.rs": "7b9b1cac3b19af1a90a8f9e127dc938bbecf44836ca788bb4e96c95633499d92",
-    "src/index.rs": "5e6d6e91f10cc08604fe306b04d099ab9445979f479c683d95ba5f0c62862526",
-    "src/lang.rs": "d2eda37e5a5077db4c10519733be120cbf498a3c804a56e8c9b5eb00145ab570",
+    "src/index.rs": "9bf198efc1465a1a27c708c2cdf612b6d6c42ffbf2c620fe3ed7d499d131acc1",
+    "src/lang.rs": "3c1b7c21f1ab21853c31bb9fe3a1b44a87876abab281b71da41f0f5518118b3f",
     "src/main.rs": "5348126a470e655dc3eb8a020edb45ba0785edd1a698ed3bfe1c07f22dd40ed8",
-    "src/parse.rs": "8ffefdf89474d94b5ff356e1083e43b39156907f1316cf8e2fee796da643425e",
+    "src/parse.rs": "9708508cc5069c73d11e3cd2ca4b285f1f06613fb81582fbff14bccfc18cd70d",
     "src/report.rs": "02b59e92530c84b3b75925a4b08328eb829e7a22a736bbab0e3be7c1952d10f4",
-    "src/resolve.rs": "f2daf7621d35d8a5c60e84f5e2a7fa705cdf9b8f4c324d87c5c5c95b8b19dd72",
+    "src/resolve.rs": "98c2291df9cbb14a8f5b586d8df91aef08eb64c71a1d2dd331d5f274558d5345",
     "src/rpc.rs": "53ea20fac7a6deeb5278dc077e98e5c66bb756638a5717da52abb2a7b0ae79a0",
     "src/serve.rs": "6054878b2b164c7942b35f2cbe3e0729b582e66fecbdfa963b9c638bde9f4672",
-    "src/store.rs": "ef4c87cfc08bfd631e62fed836da682eada1b98ac16bb94b2a0512a320376f7a",
-    "tests/integration.rs": "584df330bad55c6885465e7fdd8808e50050fa2db78f699edbf69b8641a073b9"
+    "src/store.rs": "12aa2d481e78d96d086d8d6057f37a9b36570e3d4db489442017dbef55b06596",
+    "tests/integration.rs": "695238b7f5249542fd1fde4c38e362b8ea0a59afa548270359118817057e0b2f",
+    "src/parse/nix.rs": "963eb94a0947b154110d93a11106e97334f57315f6bae89d27ac7e4874c33ffa",
+    "Cargo.toml": "248acf101fae4657bc59e57c07dc3a9201150c0c736cff64d0bcc2743db45d44",
+    "Cargo.lock": "04f343f1510ff1afb754d4365ec23858885237c2c1e03bf1337d80ca59111c10"
   }
 }

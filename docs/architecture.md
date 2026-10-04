@@ -22,7 +22,8 @@ One library, three frontends, one database.
 - `src/lang.rs` — language registry: extension → grammar + tag query.
 - `src/parse.rs` — runs the tag query, produces definitions and references,
   computes nesting (parent/qualified names) and the enclosing definition per
-  reference.
+  reference. `src/parse/nix.rs` filters static Nix names/imports, classifies
+  bindings and selects conservative lexical targets without evaluation.
 - `src/index.rs` — incremental walk (`ignore`), BLAKE3 hash of each candidate
   for change detection, then a single write transaction. Unchanged content is
   not re-parsed.
@@ -56,6 +57,14 @@ a same-named local definition. Within each ladder the narrowest scope with
 exactly one candidate wins; anything else stays unresolved. This trades recall
 for precision on purpose: a wrong edge is worse for an agent than a missing one,
 and the unresolved cases are visible in `status` and `refs`.
+
+Nix uses a stricter path: the parser selects directly defined functions visible
+in enclosing `let` or recursive attribute scopes, stopping at parameters,
+inherited values, dynamic bindings and `with`. The resolver only accepts a unique
+qualified match in the same file. Nix symbols are excluded from other languages'
+directory/global name ladders. Selected calls and cross-file Nix targets stay
+unresolved. Reference owners use full qualified names; duplicate owner names
+stay unattached instead of selecting an arbitrary symbol.
 
 ## Storage and durability
 

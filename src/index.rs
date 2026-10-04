@@ -275,9 +275,12 @@ fn index_one(
         .collect();
     let ids = store.insert_symbols(file_id, &inserts)?;
 
-    let mut by_name: HashMap<&str, i64> = HashMap::new();
+    let mut by_qualified: HashMap<&str, Vec<i64>> = HashMap::new();
     for (symbol, id) in parsed.symbols.iter().zip(ids.iter()) {
-        by_name.entry(symbol.name.as_str()).or_insert(*id);
+        by_qualified
+            .entry(symbol.qualified.as_str())
+            .or_default()
+            .push(*id);
     }
 
     let refs: Vec<RefInsert> = parsed
@@ -291,7 +294,11 @@ fn index_one(
             from_symbol_id: reference
                 .from_symbol
                 .as_deref()
-                .and_then(|name| by_name.get(name).copied()),
+                .and_then(|name| by_qualified.get(name))
+                .and_then(|ids| match ids.as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                }),
             confidence: Confidence::None,
         })
         .collect();

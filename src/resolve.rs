@@ -45,6 +45,15 @@ impl ScopeMaps {
     fn build(symbols: &[SymbolRow]) -> Self {
         let mut maps = Self::default();
         for symbol in symbols {
+            maps.qualified_by_file
+                .entry((symbol.file.clone(), symbol.qualified.clone()))
+                .or_default()
+                .push(symbol.id);
+            // Nix targets are selected lexically by the parser and stay local.
+            // Never offer Nix bindings to another language's name heuristics.
+            if symbol.language == "nix" {
+                continue;
+            }
             maps.name_by_file
                 .entry((symbol.file.clone(), symbol.name.clone()))
                 .or_default()
@@ -55,10 +64,6 @@ impl ScopeMaps {
                 .push(symbol.id);
             maps.name_global
                 .entry(symbol.name.clone())
-                .or_default()
-                .push(symbol.id);
-            maps.qualified_by_file
-                .entry((symbol.file.clone(), symbol.qualified.clone()))
                 .or_default()
                 .push(symbol.id);
             maps.qualified_by_dir
@@ -78,6 +83,12 @@ impl ScopeMaps {
     /// paths such as `Connection::open` are never linked to a same-named local
     /// definition by accident.
     fn candidates(&self, reference: &RefRow) -> Option<(i64, Confidence)> {
+        if reference.language == "nix" {
+            return self
+                .qualified_by_file
+                .get(&(reference.file.clone(), reference.path.clone()?))
+                .and_then(|ids| single(ids, Confidence::Exact));
+        }
         if let Some(path) = &reference.path {
             let qualified = pick(
                 self.qualified_by_file
@@ -111,6 +122,12 @@ impl ScopeMaps {
 
     /// Whether any candidate existed at all, to separate ambiguous from unknown.
     fn known(&self, reference: &RefRow) -> bool {
+        if reference.language == "nix" {
+            return reference.path.as_ref().is_some_and(|path| {
+                self.qualified_by_file
+                    .contains_key(&(reference.file.clone(), path.clone()))
+            });
+        }
         let qualified_known = reference
             .path
             .as_ref()
@@ -243,6 +260,7 @@ mod tests {
         let maps = ScopeMaps::build(&[
             SymbolRow {
                 id: 1,
+                language: "rust".to_string(),
                 file: "src/engine.rs".to_string(),
                 directory: "src".to_string(),
                 name: "open".to_string(),
@@ -250,6 +268,7 @@ mod tests {
             },
             SymbolRow {
                 id: 2,
+                language: "rust".to_string(),
                 file: "src/store.rs".to_string(),
                 directory: "src".to_string(),
                 name: "open".to_string(),
@@ -258,6 +277,7 @@ mod tests {
         ]);
         let reference = RefRow {
             id: 9,
+            language: "rust".to_string(),
             file: "src/engine.rs".to_string(),
             directory: "src".to_string(),
             name: "open".to_string(),
@@ -275,6 +295,7 @@ mod tests {
     fn scoped_references_fall_back_to_the_bare_name() {
         let maps = ScopeMaps::build(&[SymbolRow {
             id: 1,
+            language: "rust".to_string(),
             file: "src/lib.rs".to_string(),
             directory: "src".to_string(),
             name: "run".to_string(),
@@ -283,6 +304,7 @@ mod tests {
         // `crate::run()` from another file has no qualified match.
         let reference = RefRow {
             id: 9,
+            language: "rust".to_string(),
             file: "src/other.rs".to_string(),
             directory: "src".to_string(),
             name: "run".to_string(),
@@ -296,6 +318,7 @@ mod tests {
     fn external_scoped_paths_do_not_fall_back_to_local_names() {
         let maps = ScopeMaps::build(&[SymbolRow {
             id: 1,
+            language: "rust".to_string(),
             file: "src/store.rs".to_string(),
             directory: "src".to_string(),
             name: "open".to_string(),
@@ -304,6 +327,7 @@ mod tests {
         // `Connection::open` is an external type and must not link to `Store::open`.
         let reference = RefRow {
             id: 9,
+            language: "rust".to_string(),
             file: "src/store.rs".to_string(),
             directory: "src".to_string(),
             name: "open".to_string(),
