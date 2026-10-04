@@ -1,11 +1,14 @@
 # Working on ast-index
 
+For cross-file orientation, read [.tabula/ENTRY.md](.tabula/ENTRY.md) once when
+needed. Use its source pointers; detailed documents below are for relevant changes.
+
 This repository is meant to be continued by OpenCode, Codex or another coding
 assistant. No prior chat or assistant-specific attachment is required.
 
-1. Read [docs/requirements.md](docs/requirements.md) for the agreed scope and its
-   evidence, [docs/architecture.md](docs/architecture.md) for the layers and
-   [docs/decisions.md](docs/decisions.md) for why the design looks like this.
+1. For scope changes, consult [docs/requirements.md](docs/requirements.md).
+   For changes spanning layers, consult [docs/architecture.md](docs/architecture.md)
+   and the relevant rationale in [docs/decisions.md](docs/decisions.md).
 2. Inspect `git status --short` and the staged/unstaged diffs before editing.
    Existing work must be preserved; never reset it.
 3. Use the pinned Nix shell and keep Cargo artifacts inside the repository
@@ -35,7 +38,7 @@ configuration snippet in `docs/integration.md`, not a code change.
 
 ## Checks
 
-Run the documented fast gate before reporting work:
+Run the documented fast gate for implementation or configuration changes:
 
 ```bash
 nix develop --command bash scripts/check fast
@@ -46,6 +49,8 @@ integration tests (CLI, stdio MCP, socket service and proxy) and the Nix/Shell
 format checks. It also runs deadnix/statix and evaluates the package and module
 outputs for both Linux systems with `nix flake check --all-systems --no-build`.
 Regression tests belong next to the bug they lock down.
+For documentation-only changes, verify source claims and links; do not rebuild
+the unchanged Rust implementation merely to validate prose.
 
 ## Privacy
 

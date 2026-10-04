@@ -195,3 +195,13 @@ credentials never enter the repository; the index is local and gitignored.
   (`src/lang.rs`, `src/model.rs`), not contact addresses; they remain visible in
   the report. Synthetic home-directory examples now use a service-owned path.
   Git history and untracked runtime state were excluded.
+
+## Development checkpoint — 2026-10-03 (portable orientation)
+
+Added a source-linked `.tabula/ENTRY.md` and freshness receipt; the workspace
+overview owns cross-repository relationships. The guide now loads detailed
+documents according to the task. Source review confirmed the language registry,
+resolution and transport boundaries; the card explicitly excludes structural
+Nix support. Tabula freshness and Markdown/TOON fixture parity passed. No Rust
+implementation changed, so its unchanged test suite was not rerun for this
+documentation change. Native context comparisons live in coding-agents-nix.
