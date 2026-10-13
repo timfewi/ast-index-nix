@@ -111,11 +111,14 @@ impl RefKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
-    /// Single match in the same file.
+    /// Supported target in the same file; not type-checked.
+    #[serde(rename = "same_file", alias = "exact")]
     Exact,
-    /// Single match in the same directory.
+    /// Supported target in another file in the same directory.
+    #[serde(rename = "same_directory", alias = "high")]
     High,
-    /// Single match in the whole index.
+    /// Supported target in another directory in the same project.
+    #[serde(rename = "same_project", alias = "low")]
     Low,
     /// Unresolved or ambiguous; kept as a plain reference.
     None,
@@ -124,18 +127,18 @@ pub enum Confidence {
 impl Confidence {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Exact => "exact",
-            Self::High => "high",
-            Self::Low => "low",
+            Self::Exact => "same_file",
+            Self::High => "same_directory",
+            Self::Low => "same_project",
             Self::None => "none",
         }
     }
 
     pub fn from_stored(value: &str) -> Option<Self> {
         Some(match value {
-            "exact" => Self::Exact,
-            "high" => Self::High,
-            "low" => Self::Low,
+            "exact" | "same_file" => Self::Exact,
+            "high" | "same_directory" => Self::High,
+            "low" | "same_project" => Self::Low,
             "none" => Self::None,
             _ => return None,
         })
@@ -152,6 +155,8 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub start_line: u32,
     pub end_line: u32,
+    pub start_column: u32,
+    pub end_column: u32,
     pub parent: Option<String>,
     /// `parent::name` when nested, otherwise `name`.
     pub qualified: String,
@@ -170,6 +175,7 @@ pub struct Reference {
     pub confidence: Confidence,
     /// Full scoped path when the language provides one.
     pub path: Option<String>,
+    pub reason: String,
 }
 
 /// An outgoing edge from a symbol to a resolved callee.
@@ -194,6 +200,15 @@ pub struct Status {
     pub imports: i64,
     pub resolved_references: i64,
     pub languages: Vec<LanguageCount>,
+    pub generation: i64,
+    pub freshness: String,
+    pub last_freshness_check: Option<Freshness>,
+    pub health: Option<crate::index::IndexStats>,
+    pub parser_versions: std::collections::BTreeMap<String, String>,
+    pub current_parser_versions: std::collections::BTreeMap<String, String>,
+    pub resolution_version: Option<String>,
+    pub current_resolution_version: String,
+    pub resolution_reasons: std::collections::BTreeMap<String, i64>,
 }
 
 /// One row of the language breakdown in `status`.
@@ -202,4 +217,16 @@ pub struct LanguageCount {
     pub language: String,
     pub files: i64,
     pub symbols: i64,
+}
+
+/// Freshness applies only to the instant of this explicit bounded scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Freshness {
+    pub state: String,
+    pub checked_at: i64,
+    pub changed_files: usize,
+    #[serde(default)]
+    pub version_changed: bool,
+    pub examples: Vec<String>,
+    pub complete: bool,
 }

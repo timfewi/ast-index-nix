@@ -10,6 +10,7 @@ use crate::lang::LangSpec;
 use crate::model::{RefKind, SymbolKind};
 
 mod nix;
+mod scopes;
 
 /// A definition found in one file, with byte ranges used for nesting.
 #[derive(Debug, Clone)]
@@ -18,12 +19,16 @@ pub struct ParsedSymbol {
     pub kind: SymbolKind,
     pub start_line: u32,
     pub end_line: u32,
+    pub start_column: u32,
+    pub end_column: u32,
     pub start_byte: usize,
     pub end_byte: usize,
     /// Name of the innermost enclosing definition, if any.
     pub parent: Option<String>,
     /// Full `parent::name` chain when nested, otherwise `name`.
     pub qualified: String,
+    pub signature: String,
+    pub exported: bool,
 }
 
 /// An outgoing call site or import.
@@ -38,6 +43,7 @@ pub struct ParsedRef {
     pub byte: usize,
     /// Qualified name of the innermost enclosing definition, if any.
     pub from_symbol: Option<String>,
+    pub blocked: Option<String>,
 }
 
 /// Everything extracted from one file.
@@ -45,22 +51,46 @@ pub struct ParsedRef {
 pub struct ParsedFile {
     pub symbols: Vec<ParsedSymbol>,
     pub refs: Vec<ParsedRef>,
+    pub has_errors: bool,
 }
 
 /// Parse `source` with the grammar and tag query of `spec`.
 pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
-    let language = spec.language();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&language)
-        .map_err(|error| Error::Invalid(format!("cannot load grammar for {}: {error}", spec.id)))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| Error::Invalid(format!("parser returned no tree for {}", spec.id)))?;
-    let query = Query::new(&language, spec.tags()).map_err(|error| {
-        Error::Invalid(format!("tag query for {} is invalid: {error}", spec.id))
-    })?;
+    ParserCache::default().parse(source, spec)
+}
 
+/// Reused during an indexing pass; no global mutable parser state.
+#[derive(Default)]
+pub struct ParserCache {
+    entries: std::collections::HashMap<&'static str, (Parser, Query)>,
+}
+
+impl ParserCache {
+    pub fn parse(&mut self, source: &str, spec: LangSpec) -> Result<ParsedFile> {
+        if !self.entries.contains_key(spec.id) {
+            let language = spec.language();
+            let mut parser = Parser::new();
+            parser
+                .set_language(&language)
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            let query =
+                Query::new(&language, spec.tags()).map_err(|e| Error::Invalid(e.to_string()))?;
+            self.entries.insert(spec.id, (parser, query));
+        }
+        let (parser, query) = self.entries.get_mut(spec.id).expect("inserted parser");
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| Error::Invalid("parser returned no tree".into()))?;
+        extract(source, spec, &tree, query)
+    }
+}
+
+fn extract(
+    source: &str,
+    spec: LangSpec,
+    tree: &tree_sitter::Tree,
+    query: &Query,
+) -> Result<ParsedFile> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut symbols: Vec<ParsedSymbol> = Vec::new();
@@ -69,7 +99,7 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
     // Two patterns can match the same node; keep one definition per start byte.
     let mut seen_symbols: HashSet<usize> = HashSet::new();
 
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
     while let Some(query_match) = matches.next() {
         let mut definition: Option<(SymbolKind, Node<'_>)> = None;
         let mut reference: Option<(RefKind, Node<'_>)> = None;
@@ -99,7 +129,15 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
             }
         }
 
+        if symbols.len() + refs.len() >= 100_000 {
+            return Err(Error::Invalid("file extraction budget exceeded".into()));
+        }
         let Some(name_node) = name else { continue };
+        if name_node.byte_range().len() > 4096 {
+            return Err(Error::Invalid(
+                "symbol/reference name exceeds 4096 bytes".into(),
+            ));
+        }
         let text = match source.get(name_node.byte_range()) {
             Some(text) => text,
             None => continue,
@@ -127,17 +165,42 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
                 kind,
                 start_line,
                 end_line,
+                start_column: node.start_position().column as u32 + 1,
+                end_column: node.end_position().column as u32 + 1,
                 start_byte: node.start_byte(),
                 end_byte: node.end_byte(),
                 parent: None,
                 qualified: String::new(),
+                exported: is_exported(node, spec.id),
+                signature: source
+                    .get(
+                        node.start_byte()
+                            ..node
+                                .child_by_field_name("body")
+                                .map_or(node.end_byte(), |body| body.start_byte()),
+                    )
+                    .unwrap_or_default()
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
             });
         } else if let Some((kind, _node)) = reference {
-            let name = if spec.id == "nix" && kind == RefKind::Import {
-                let Some(name) = nix::literal_import(name_node, source) else {
-                    continue;
-                };
-                name
+            let name = if kind == RefKind::Import
+                && _node
+                    .child_by_field_name("function")
+                    .is_some_and(|n| n.kind() == "import")
+            {
+                "<dynamic>".into()
+            } else if spec.id == "nix" && kind == RefKind::Import {
+                nix::literal_import(name_node, source).unwrap_or_else(|| "<dynamic>".into())
+            } else if spec.id == "rust" && kind == RefKind::Import {
+                name_node
+                    .child_by_field_name("name")
+                    .map_or(text, |node| &source[node.byte_range()])
+                    .to_string()
             } else {
                 normalize_reference_name(kind, text)
             };
@@ -149,6 +212,15 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string)
+            } else if kind == RefKind::Import && spec.id == "rust" {
+                _node
+                    .child_by_field_name("argument")
+                    .map(|n| source[n.byte_range()].to_string())
+            } else {
+                None
+            };
+            let blocked = if name == "<dynamic>" {
+                Some("dynamic".into())
             } else {
                 None
             };
@@ -159,6 +231,7 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
                 line: name_node.start_position().row as u32 + 1,
                 byte: name_node.start_byte(),
                 from_symbol: None,
+                blocked,
             });
             if spec.id == "nix" && kind == RefKind::Call {
                 nix_calls.push((refs.len() - 1, name_node));
@@ -166,7 +239,7 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
         }
     }
 
-    assign_nesting(&mut symbols);
+    assign_nesting(&mut symbols)?;
     assign_enclosing(&symbols, &mut refs);
     for (index, node) in nix_calls {
         if let Some(binding) = nix::local_binding(node, &refs[index].name, source) {
@@ -179,7 +252,42 @@ pub fn parse(source: &str, spec: LangSpec) -> Result<ParsedFile> {
         }
     }
 
-    Ok(ParsedFile { symbols, refs })
+    if spec.id != "nix" {
+        scopes::apply(tree.root_node(), spec.id, source, &symbols, &mut refs);
+    }
+    Ok(ParsedFile {
+        symbols,
+        refs,
+        has_errors: tree.root_node().has_error(),
+    })
+}
+
+fn is_exported(mut node: Node<'_>, language: &str) -> bool {
+    if language == "python" {
+        return node.parent().is_some_and(|p| p.kind() == "module");
+    }
+    if !matches!(language, "javascript" | "typescript" | "tsx") {
+        return false;
+    }
+    for _ in 0..3 {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        if parent.kind() == "export_statement" {
+            let mut cursor = parent.walk();
+            return !parent
+                .children(&mut cursor)
+                .any(|child| child.kind() == "default");
+        }
+        if !matches!(
+            parent.kind(),
+            "lexical_declaration" | "variable_declaration"
+        ) {
+            return false;
+        }
+        node = parent;
+    }
+    false
 }
 
 /// Import strings arrive quoted (`"./mod"`); definitions are identifiers.
@@ -193,7 +301,7 @@ fn normalize_reference_name(kind: RefKind, text: &str) -> String {
 }
 
 /// Sort definitions and compute the innermost enclosing definition for each.
-fn assign_nesting(symbols: &mut [ParsedSymbol]) {
+fn assign_nesting(symbols: &mut [ParsedSymbol]) -> Result<()> {
     symbols.sort_by(|left, right| {
         left.start_byte
             .cmp(&right.start_byte)
@@ -224,8 +332,12 @@ fn assign_nesting(symbols: &mut [ParsedSymbol]) {
             Some(top) => format!("{}::{}", symbols[top].qualified, symbols[index].name),
             None => symbols[index].name.clone(),
         };
+        if symbols[index].qualified.len() > 4096 {
+            return Err(Error::Invalid("qualified name budget exceeded".into()));
+        }
         stack.push(index);
     }
+    Ok(())
 }
 
 /// Definitions that make enclosed functions methods rather than functions.
@@ -365,7 +477,8 @@ in {
                 "./other.nix",
                 "./module.nix",
                 "<nixpkgs/nixos>",
-                "./literal.nix"
+                "./literal.nix",
+                "<dynamic>"
             ]
         );
     }
@@ -436,7 +549,17 @@ in rec {
 }
 "#,
         );
-        assert!(!parsed.refs.iter().any(|r| r.kind == RefKind::Import));
+        let imports: Vec<_> = parsed
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Import)
+            .collect();
+        assert_eq!(imports.len(), 6);
+        assert!(
+            imports
+                .iter()
+                .all(|r| r.name == "<dynamic>" && r.blocked.as_deref() == Some("dynamic"))
+        );
     }
 
     #[test]

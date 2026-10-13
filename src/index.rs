@@ -13,7 +13,7 @@ use std::time::{Instant, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::lang;
@@ -23,7 +23,7 @@ use crate::resolve::{self, ResolutionStats};
 use crate::store::{RefInsert, Store, SymbolInsert, now_unix};
 
 /// Options for one indexing pass.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexOptions {
     /// Re-parse every file even when its content hash matches.
     pub force: bool,
@@ -34,6 +34,8 @@ pub struct IndexOptions {
     /// gitignore-style patterns excluded from the walk, relative to the root.
     /// A pattern without a leading slash matches at any depth.
     pub exclude: Vec<String>,
+    pub max_files: usize,
+    pub max_total_bytes: u64,
 }
 
 impl Default for IndexOptions {
@@ -43,12 +45,14 @@ impl Default for IndexOptions {
             max_file_bytes: 2 * 1024 * 1024,
             max_failures: 16,
             exclude: Vec::new(),
+            max_files: 100_000,
+            max_total_bytes: 256 * 1024 * 1024,
         }
     }
 }
 
 /// Summary of one indexing pass.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexStats {
     pub files_seen: usize,
     pub files_indexed: usize,
@@ -61,9 +65,13 @@ pub struct IndexStats {
     pub resolution: ResolutionStats,
     pub duration_ms: u128,
     pub failures: Vec<String>,
+    pub scan_complete: bool,
+    pub parse_error_files: usize,
+    #[serde(default)]
+    pub resolution_recomputed: bool,
 }
 
-struct Candidate {
+pub(crate) struct Candidate {
     relative: String,
     absolute: std::path::PathBuf,
     lang: lang::LangSpec,
@@ -73,11 +81,13 @@ struct Candidate {
 
 /// Index `root` into `store`. Paths are stored relative to `root`.
 pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<IndexStats> {
+    let _writer = store.write_lock()?;
     let started = Instant::now();
     let root = root
         .canonicalize()
         .map_err(|error| Error::io(root.to_path_buf(), error))?;
     let root_text = root.to_string_lossy().to_string();
+    store.require_root(&root)?;
 
     let mut stats = IndexStats {
         files_seen: 0,
@@ -91,8 +101,13 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         resolution: ResolutionStats::default(),
         duration_ms: 0,
         failures: Vec::new(),
+        scan_complete: true,
+        parse_error_files: 0,
+        resolution_recomputed: false,
     };
 
+    stats.resolution_recomputed =
+        store.meta("resolution_version")?.as_deref() != Some(&resolve::fingerprint());
     let candidates = collect_candidates(&root, options, &mut stats)?;
     let existing: HashMap<String, _> = store.file_states()?.into_iter().collect();
 
@@ -101,23 +116,32 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         present.insert(candidate.relative.clone());
     }
 
+    let mut parsers = parse::ParserCache::default();
     store.transaction(|| {
         store.set_meta("root", &root_text)?;
         store.set_meta("schema_version", &crate::store::SCHEMA_VERSION.to_string())?;
 
         for path in existing.keys() {
-            if !present.contains(path) {
+            if stats.scan_complete && !present.contains(path) {
                 store.remove_file(path)?;
                 stats.files_removed += 1;
             }
         }
 
+        let mut bytes_read = 0u64;
         for candidate in &candidates {
             let previous = existing.get(&candidate.relative);
-            let bytes = match std::fs::read(&candidate.absolute) {
+            let bytes = match read_source(
+                &root,
+                &candidate.absolute,
+                options
+                    .max_file_bytes
+                    .min(options.max_total_bytes.saturating_sub(bytes_read)),
+            ) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     stats.files_failed += 1;
+                    stats.scan_complete = false;
                     record_failure(
                         &mut stats,
                         options,
@@ -126,6 +150,7 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
                     continue;
                 }
             };
+            bytes_read += bytes.len() as u64;
             // Hash the raw bytes; only the parser sees a lossy UTF-8 view, so a
             // stray non-UTF-8 byte in a comment does not drop the whole file.
             let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -133,23 +158,33 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
             if let Some(previous) = previous
                 && !options.force
                 && previous.hash == hash
+                && previous.fingerprint == candidate.lang.fingerprint()
             {
                 if previous.size != candidate.size || previous.mtime_ns != candidate.mtime_ns {
                     store.touch_file(&candidate.relative, candidate.size, candidate.mtime_ns)?;
                 }
+                let project=project_boundary(&root, &candidate.absolute);
+                if previous.project!=project {
+                    store.conn.execute("UPDATE files SET project=?2 WHERE path=?1",rusqlite::params![candidate.relative,project])?;
+                    stats.resolution_recomputed=true;
+                }
+                stats.parse_error_files += usize::from(previous.parse_errors);
                 stats.files_unchanged += 1;
                 continue;
             }
 
             let source = String::from_utf8_lossy(&bytes);
-            match index_one(store, candidate, &source, &hash) {
-                Ok((symbol_count, reference_count)) => {
+            match index_one(store, candidate, &source, &hash, &root, &mut parsers) {
+                Ok((symbol_count, reference_count, parse_errors)) => {
                     stats.files_indexed += 1;
+                    stats.parse_error_files += usize::from(parse_errors);
                     stats.symbols += symbol_count;
                     stats.references += reference_count;
                 }
+                Err(Error::Database(error)) => return Err(Error::Database(error)),
                 Err(error) => {
                     stats.files_failed += 1;
+                    stats.scan_complete = false;
                     record_failure(
                         &mut stats,
                         options,
@@ -159,8 +194,24 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
             }
         }
 
-        stats.resolution = resolve::resolve_all(store)?;
+        let (symbols, refs): (i64,i64)=store.conn.query_row("SELECT (SELECT COUNT(*) FROM symbols),(SELECT COUNT(*) FROM refs)",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        if symbols>200_000 || refs>500_000 { return Err(Error::Invalid("index size budget exceeded (200000 symbols / 500000 references); narrow the root or exclusions".into())); }
+        if stats.files_indexed > 0 || stats.files_removed > 0 || stats.resolution_recomputed {
+            stats.resolution_recomputed=true;
+            crate::imports::resolve(store)?;
+            stats.resolution = resolve::resolve_all(store)?;
+        }
+        store.set_meta("resolution_version", &resolve::fingerprint())?;
         store.set_meta("last_indexed_at", &now_unix().to_string())?;
+        store.set_meta("parser_versions", &serde_json::to_string(&lang::fingerprints())?)?;
+        store.set_meta("index_options", &serde_json::to_string(options)?)?;
+        stats.duration_ms=started.elapsed().as_millis();
+        store.set_meta("health", &serde_json::to_string(&stats)?)?;
+        store.set_meta("last_freshness_check", "null")?;
+        store.bump_generation()?;
+        if stats.resolution_recomputed || store.generation()? == 1 {
+            store.save_snapshot(stats.scan_complete && stats.files_failed == 0 && stats.parse_error_files == 0)?;
+        }
         Ok(())
     })?;
 
@@ -203,7 +254,26 @@ fn collect_candidates(
         .build();
 
     let mut candidates = Vec::new();
-    for entry in walker.flatten() {
+    let mut total_bytes = 0u64;
+    for (walked, entry) in walker.enumerate() {
+        if walked >= options.max_files.saturating_mul(4) {
+            stats.scan_complete = false;
+            record_failure(stats, options, "directory traversal budget exceeded".into());
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                stats.files_failed += 1;
+                stats.scan_complete = false;
+                record_failure(
+                    stats,
+                    options,
+                    "directory traversal failed; absent indexed paths retained".into(),
+                );
+                continue;
+            }
+        };
         let Some(file_type) = entry.file_type() else {
             continue;
         };
@@ -214,13 +284,42 @@ fn collect_candidates(
         let Some(spec) = lang::detect(path) else {
             continue;
         };
-        let Ok(metadata) = entry.metadata() else {
-            continue;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                stats.files_failed += 1;
+                stats.scan_complete = false;
+                record_failure(
+                    stats,
+                    options,
+                    "file metadata unavailable; absent indexed paths retained".into(),
+                );
+                continue;
+            }
         };
         let size = metadata.len();
         if size > options.max_file_bytes {
             stats.files_skipped += 1;
+            stats.scan_complete = false;
+            record_failure(
+                stats,
+                options,
+                format!(
+                    "{}: file size limit exceeded",
+                    path.strip_prefix(root).unwrap_or(path).display()
+                ),
+            );
             continue;
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        if candidates.len() >= options.max_files || total_bytes > options.max_total_bytes {
+            stats.scan_complete = false;
+            record_failure(
+                stats,
+                options,
+                "index scan budget exceeded; absent indexed paths retained".into(),
+            );
+            break;
         }
         let mtime_ns = metadata
             .modified()
@@ -250,14 +349,25 @@ fn index_one(
     candidate: &Candidate,
     source: &str,
     hash: &str,
-) -> Result<(usize, usize)> {
-    let parsed = parse::parse(source, candidate.lang)?;
+    root: &Path,
+    parsers: &mut parse::ParserCache,
+) -> Result<(usize, usize, bool)> {
+    let parsed = parsers.parse(source, candidate.lang)?;
     let file_id = store.upsert_file(
         &candidate.relative,
         candidate.lang.family(),
         candidate.size,
         candidate.mtime_ns,
         hash,
+    )?;
+    store.conn.execute(
+        "UPDATE files SET project = ?2, fingerprint = ?3, parse_errors = ?4 WHERE id = ?1",
+        rusqlite::params![
+            file_id,
+            project_boundary(root, &candidate.absolute),
+            candidate.lang.fingerprint(),
+            parsed.has_errors
+        ],
     )?;
     store.clear_file_contents(file_id)?;
 
@@ -269,11 +379,26 @@ fn index_one(
             kind: symbol.kind,
             start_line: symbol.start_line,
             end_line: symbol.end_line,
+            start_column: symbol.start_column,
+            end_column: symbol.end_column,
             parent: symbol.parent.clone(),
             qualified: symbol.qualified.clone(),
         })
         .collect();
     let ids = store.insert_symbols(file_id, &inserts)?;
+    for (symbol, id) in parsed.symbols.iter().zip(&ids) {
+        store.conn.execute(
+            "UPDATE symbols SET signature = ?2, content_hash = ?3, exported = ?4 WHERE id = ?1",
+            rusqlite::params![
+                id,
+                symbol.signature,
+                blake3::hash(&source.as_bytes()[symbol.start_byte..symbol.end_byte])
+                    .to_hex()
+                    .to_string(),
+                symbol.exported
+            ],
+        )?;
+    }
 
     let mut by_qualified: HashMap<&str, Vec<i64>> = HashMap::new();
     for (symbol, id) in parsed.symbols.iter().zip(ids.iter()) {
@@ -300,9 +425,158 @@ fn index_one(
                     _ => None,
                 }),
             confidence: Confidence::None,
+            blocked: reference.blocked.clone(),
         })
         .collect();
     store.insert_refs(file_id, &refs)?;
 
-    Ok((parsed.symbols.len(), parsed.refs.len()))
+    Ok((parsed.symbols.len(), parsed.refs.len(), parsed.has_errors))
+}
+
+fn project_boundary(root: &Path, file: &Path) -> String {
+    for parent in file.ancestors().skip(1) {
+        if parent == root {
+            break;
+        }
+        if [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+            ".git",
+        ]
+        .iter()
+        .any(|marker| parent.join(marker).exists())
+        {
+            return parent
+                .strip_prefix(root)
+                .unwrap_or(parent)
+                .to_string_lossy()
+                .replace('\\', "/");
+        }
+    }
+    String::new()
+}
+
+/// Bounded, non-symlink file read. Source content cannot grant additional paths.
+pub(crate) fn read_source(root: &Path, path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let canonical = path.canonicalize().map_err(|e| Error::io(path, e))?;
+    if !canonical.starts_with(root) {
+        return Err(Error::Invalid("source path escapes indexed root".into()));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(&canonical)
+        .map_err(|e| Error::io(path, e))?;
+    if !file.metadata().map_err(|e| Error::io(path, e))?.is_file() {
+        return Err(Error::Invalid("source is not a regular file".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::io(path, e))?;
+    if bytes.len() as u64 > limit {
+        return Err(Error::Invalid("source read budget exceeded".into()));
+    }
+    Ok(bytes)
+}
+
+/// Check current bytes without changing indexed content or trusting timestamps.
+pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> {
+    let _writer = store.write_lock()?;
+    let root = root.canonicalize().map_err(|e| Error::io(root, e))?;
+    store.require_root(&root)?;
+    let options: IndexOptions = store
+        .meta("index_options")?
+        .map(|s| serde_json::from_str(&s))
+        .transpose()?
+        .unwrap_or_default();
+    let mut stats = IndexStats {
+        files_seen: 0,
+        files_indexed: 0,
+        files_unchanged: 0,
+        files_removed: 0,
+        files_skipped: 0,
+        files_failed: 0,
+        symbols: 0,
+        references: 0,
+        resolution: ResolutionStats::default(),
+        duration_ms: 0,
+        failures: Vec::new(),
+        scan_complete: true,
+        parse_error_files: 0,
+        resolution_recomputed: false,
+    };
+    let candidates = collect_candidates(&root, &options, &mut stats)?;
+    let existing: HashMap<_, _> = store.file_states()?.into_iter().collect();
+    let present: HashSet<_> = candidates.iter().map(|c| c.relative.as_str()).collect();
+    let mut changed = 0usize;
+    let mut examples = Vec::new();
+    let mut bytes_read = 0u64;
+    for candidate in &candidates {
+        let matches = match read_source(
+            &root,
+            &candidate.absolute,
+            options
+                .max_file_bytes
+                .min(options.max_total_bytes.saturating_sub(bytes_read)),
+        ) {
+            Ok(bytes) => {
+                bytes_read += bytes.len() as u64;
+                existing.get(&candidate.relative).is_some_and(|state| {
+                    state.hash == blake3::hash(&bytes).to_hex().as_str()
+                        && state.fingerprint == candidate.lang.fingerprint()
+                        && state.project == project_boundary(&root, &candidate.absolute)
+                })
+            }
+            Err(_) => {
+                stats.scan_complete = false;
+                false
+            }
+        };
+        if !matches {
+            changed += 1;
+            if examples.len() < 16 {
+                examples.push(candidate.relative.clone());
+            }
+        }
+    }
+    if stats.scan_complete {
+        for path in existing.keys().filter(|p| !present.contains(p.as_str())) {
+            changed += 1;
+            if examples.len() < 16 {
+                examples.push(path.clone());
+            }
+        }
+    }
+    let health: Option<IndexStats> = store
+        .meta("health")?
+        .map(|s| serde_json::from_str(&s))
+        .transpose()?;
+    stats.scan_complete &= health
+        .as_ref()
+        .is_some_and(|h| h.scan_complete && h.files_failed == 0 && h.parse_error_files == 0);
+    examples.sort();
+    let version_changed =
+        store.meta("resolution_version")?.as_deref() != Some(&resolve::fingerprint());
+    let result = crate::model::Freshness {
+        state: if changed > 0 || version_changed {
+            "stale"
+        } else if !stats.scan_complete {
+            "incomplete"
+        } else {
+            "fresh_at_check"
+        }
+        .into(),
+        checked_at: now_unix(),
+        changed_files: changed,
+        version_changed,
+        examples,
+        complete: stats.scan_complete,
+    };
+    store.set_meta("last_freshness_check", &serde_json::to_string(&result)?)?;
+    Ok(result)
 }

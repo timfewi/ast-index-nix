@@ -1,118 +1,142 @@
-//! `ast-index` command line interface: indexing, queries, the stdio MCP adapter
-//! and the persistent socket service.
+//! CLI transport. Query behavior and output contracts live in Engine.
+use ast_index::{
+    engine::Engine,
+    error::Error,
+    index::IndexOptions,
+    query::Query,
+    report,
+    rpc::RpcServer,
+    serve::{self, ServeOptions},
+};
+use clap::{Args, Parser, Subcommand};
+use std::{path::PathBuf, process::ExitCode};
 
-use std::path::PathBuf;
-use std::process::ExitCode;
-
-use clap::{Parser, Subcommand};
-use serde::Serialize;
-
-use ast_index::engine::Engine;
-use ast_index::error::Error;
-use ast_index::index::IndexOptions;
-use ast_index::report;
-use ast_index::rpc::RpcServer;
-use ast_index::serve::{self, ServeOptions};
-
-/// Lightweight AST index for local agent harnesses.
 #[derive(Debug, Parser)]
-#[command(name = "ast-index", version, about, long_about = None)]
+#[command(
+    name = "ast-index",
+    version,
+    about = "Local structural code navigation"
+)]
 struct Cli {
-    /// Indexed root directory (default: current directory).
-    #[arg(long, global = true, env = "AST_INDEX_ROOT", value_name = "PATH")]
+    #[arg(long, global = true, env = "AST_INDEX_ROOT")]
     root: Option<PathBuf>,
-
-    /// Database file (default: <root>/.ast-index/index.sqlite).
-    #[arg(long, global = true, env = "AST_INDEX_DB", value_name = "PATH")]
+    #[arg(long, global = true, env = "AST_INDEX_DB")]
     db: Option<PathBuf>,
-
+    #[command(flatten)]
+    options: QueryOptions,
     #[command(subcommand)]
     command: Command,
 }
 
+#[derive(Debug, Default, Args)]
+struct QueryOptions {
+    #[arg(long, global = true)]
+    json: bool,
+    /// Select the file containing a symbol, or filter list results.
+    #[arg(long, global = true)]
+    file: Option<String>,
+    #[arg(long, global = true)]
+    subtree: Option<String>,
+    #[arg(long, global = true)]
+    language: Option<String>,
+    #[arg(long, global = true)]
+    kind: Option<String>,
+    #[arg(long, global = true)]
+    line: Option<u32>,
+    #[arg(long, global = true)]
+    column: Option<u32>,
+    #[arg(long, global = true)]
+    depth: Option<u32>,
+    #[arg(long, global = true)]
+    limit: Option<usize>,
+    #[arg(long, global = true)]
+    cursor: Option<String>,
+    #[arg(long, global = true, value_parser = ["exact", "prefix", "contains"])]
+    match_mode: Option<String>,
+    #[arg(long, global = true)]
+    reason: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Build or update the index.
+    /// Build/update the index; does not execute project code.
     Index {
-        /// Re-parse every file, ignoring size and mtime.
         #[arg(long)]
         force: bool,
-        /// gitignore-style path patterns to exclude (repeatable).
-        #[arg(long = "exclude", value_name = "GLOB")]
+        #[arg(long = "exclude")]
         exclude: Vec<String>,
-        /// Print the summary as JSON.
-        #[arg(long)]
-        json: bool,
     },
-    /// Show index coverage.
-    Status {
-        #[arg(long)]
-        json: bool,
+    Imports {
+        path: Option<String>,
     },
-    /// List the definitions of one file.
+    Importers {
+        path: String,
+    },
+    Deps {
+        path: Option<String>,
+    },
+    /// Rank files/symbols using the static graph, within a byte budget.
+    Map {
+        query: Option<String>,
+        #[arg(long, default_value_t = 8192)]
+        budget: usize,
+    },
+    /// Explicit JSON array of {file,start_line,end_line} changes.
+    Changes {
+        ranges: String,
+        #[arg(long)]
+        baseline: Option<i64>,
+    },
+    Diff {
+        #[arg(long)]
+        baseline: Option<i64>,
+    },
+    /// Import precomputed local SCIP data; never runs an indexer.
+    ImportScip {
+        artifact: PathBuf,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
+    Semantic {
+        query: Option<String>,
+        #[arg(long,default_value="definition",value_parser=["definition","reference","implementation"])]
+        relation: String,
+    },
+    Status,
+    /// Explicitly compare bounded current content with the indexed snapshot.
+    Freshness,
     Outline {
-        file: String,
-        #[arg(long)]
-        json: bool,
+        path: String,
     },
-    /// Search definitions by name or qualified name.
     Search {
         query: String,
-        #[arg(long, default_value_t = 25)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
     },
-    /// Show one symbol with its callers and callees.
     Describe {
-        symbol: String,
-        #[arg(long)]
-        json: bool,
+        query: String,
     },
-    /// Show incoming call edges for a symbol.
     Callers {
-        symbol: String,
-        #[arg(long)]
-        json: bool,
+        query: String,
     },
-    /// Show outgoing call edges for a symbol.
     Callees {
-        symbol: String,
-        #[arg(long)]
-        json: bool,
+        query: String,
     },
-    /// Show transitive callers of a symbol.
     Impact {
-        symbol: String,
-        #[arg(long, default_value_t = 3)]
-        depth: u32,
-        #[arg(long)]
-        json: bool,
+        query: String,
     },
-    /// Show stored references of one file.
     Refs {
-        file: String,
-        #[arg(long)]
-        json: bool,
+        path: Option<String>,
     },
-    /// Serve the MCP surface on stdio, or proxy to a socket service.
     Mcp {
-        /// Proxy stdio to an already running socket service.
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-    /// Run the persistent Unix socket service.
     Serve {
-        /// Socket path, for example /run/user/1000/ast-index.sock.
         #[arg(long)]
         socket: PathBuf,
-        /// Lock file (default: the socket path with a .lock suffix).
         #[arg(long)]
         lock: Option<PathBuf>,
-        /// gitignore-style path patterns to exclude when indexing at startup.
-        #[arg(long = "exclude", value_name = "GLOB")]
+        #[arg(long = "exclude")]
         exclude: Vec<String>,
-        /// Index once at startup before serving.
         #[arg(long)]
         index: bool,
     },
@@ -120,154 +144,161 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let json = cli.options.json;
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(Error::NotIndexed(message)) => {
-            eprintln!("{message}");
-            ExitCode::from(2)
-        }
         Err(error) => {
+            if json {
+                let payload = error.payload();
+                println!("{payload}");
+            }
             eprintln!("error: {error}");
-            ExitCode::from(1)
+            ExitCode::from(if matches!(error, Error::NotIndexed(_)) {
+                2
+            } else {
+                1
+            })
         }
     }
 }
 
 fn run(cli: Cli) -> ast_index::Result<()> {
-    let root = match &cli.root {
-        Some(root) => root.clone(),
-        None => std::env::current_dir().map_err(|error| Error::io(".", error))?,
-    };
-
+    if let Command::Mcp {
+        socket: Some(socket),
+    } = &cli.command
+    {
+        return serve::run_proxy(socket);
+    }
+    let root = cli
+        .root
+        .unwrap_or(std::env::current_dir().map_err(|e| Error::io(".", e))?);
+    let engine = Engine::open(root, cli.db)?;
     match cli.command {
+        Command::ImportScip { artifact, manifest } => {
+            let result = ast_index::scip::import(
+                engine.root(),
+                engine.store(),
+                &artifact,
+                manifest.as_deref(),
+            )?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
+        Command::Index { force, exclude } => {
+            let stats = engine.index(&IndexOptions {
+                force,
+                exclude,
+                ..IndexOptions::default()
+            })?;
+            println!(
+                "{}",
+                if cli.options.json {
+                    serde_json::to_string(&stats)?
+                } else {
+                    report::index_text(&stats)
+                }
+            );
+            Ok(())
+        }
         Command::Serve {
             socket,
             lock,
             exclude,
             index,
         } => {
-            let engine = Engine::open(&root, cli.db)?;
             if index {
-                let stats = engine.index(&IndexOptions {
-                    exclude,
-                    ..IndexOptions::default()
-                })?;
-                eprintln!("{}", report::index_text(&stats));
-            }
-            let server = RpcServer::new(engine);
-            serve::run_socket(server, &ServeOptions { socket, lock })
-        }
-        Command::Mcp { socket } => {
-            if let Some(socket) = socket {
-                serve::run_proxy(&socket)
-            } else {
-                let engine = Engine::open(&root, cli.db)?;
-                serve::run_stdio(&RpcServer::new(engine))
-            }
-        }
-        command => {
-            let engine = Engine::open(&root, cli.db)?;
-            run_query(&engine, command)
-        }
-    }
-}
-
-fn run_query(engine: &Engine, command: Command) -> ast_index::Result<()> {
-    match command {
-        Command::Index {
-            force,
-            exclude,
-            json,
-        } => {
-            let stats = engine.index(&IndexOptions {
-                force,
-                exclude,
-                ..IndexOptions::default()
-            })?;
-            print_json(&stats, json, || report::index_text(&stats))?;
-        }
-        Command::Status { json } => {
-            let status = engine.status()?;
-            print_json(&status, json, || report::status_text(&status))?;
-        }
-        Command::Outline { file, json } => {
-            let symbols = engine.outline(&file)?;
-            print_json(&symbols, json, || report::symbols_text(&symbols))?;
-        }
-        Command::Search { query, limit, json } => {
-            let symbols = engine.search(&query, limit.clamp(1, 100))?;
-            print_json(&symbols, json, || report::symbols_text(&symbols))?;
-        }
-        Command::Describe { symbol, json } => {
-            let (found, relations) = engine.relations(&symbol)?;
-            if json {
-                let payload = serde_json::json!({
-                    "symbol": found,
-                    "callers": relations.callers,
-                    "callees": relations.callees,
-                });
-                println!("{}", serde_json::to_string_pretty(&payload)?);
-            } else {
-                println!(
-                    "{}  {}  {}:{}",
-                    found.qualified,
-                    found.kind.as_str(),
-                    found.file,
-                    found.start_line
+                eprintln!(
+                    "{}",
+                    report::index_text(&engine.index(&IndexOptions {
+                        exclude,
+                        ..IndexOptions::default()
+                    })?)
                 );
-                println!("{}", report::edges_text("callers", &relations.callers));
-                println!("{}", report::edges_text("callees", &relations.callees));
             }
+            serve::run_socket(RpcServer::new(engine), &ServeOptions { socket, lock })
         }
-        Command::Callers { symbol, json } => {
-            let (_, edges) = engine.callers(&symbol)?;
-            print_json(&edges, json, || report::edges_text("callers", &edges))?;
+        Command::Mcp { .. } => serve::run_stdio(&RpcServer::new(engine)),
+        command => {
+            let o = cli.options;
+            let mut request = Query {
+                file: o.file,
+                subtree: o.subtree,
+                language: o.language,
+                kind: o.kind,
+                line: o.line,
+                column: o.column,
+                depth: o.depth,
+                limit: o.limit,
+                cursor: o.cursor,
+                match_mode: o.match_mode,
+                reason: o.reason,
+                ..Query::default()
+            };
+            let (action, query) = match command {
+                Command::Imports { path } => {
+                    if path.is_some() {
+                        request.file = path;
+                    }
+                    ("imports", None)
+                }
+                Command::Importers { path } => {
+                    request.file = Some(path);
+                    ("importers", None)
+                }
+                Command::Deps { path } => {
+                    if path.is_some() {
+                        request.file = path;
+                    }
+                    ("deps", None)
+                }
+                Command::Map { query, budget } => {
+                    request.budget = Some(budget);
+                    ("map", query)
+                }
+                Command::Changes { ranges, baseline } => {
+                    request.changes = serde_json::from_str(&ranges)?;
+                    request.baseline = baseline;
+                    ("changes", None)
+                }
+                Command::Diff { baseline } => {
+                    request.baseline = baseline;
+                    ("diff", None)
+                }
+                Command::Semantic { query, relation } => {
+                    request.relation = Some(relation);
+                    ("semantic", query)
+                }
+                Command::Status => ("status", None),
+                Command::Freshness => ("freshness", None),
+                Command::Outline { path } => {
+                    request.file = Some(path);
+                    ("outline", None)
+                }
+                Command::Refs { path } => {
+                    if path.is_some() {
+                        request.file = path;
+                    }
+                    ("refs", None)
+                }
+                Command::Search { query } => ("search", Some(query)),
+                Command::Describe { query } => ("describe", Some(query)),
+                Command::Callers { query } => ("callers", Some(query)),
+                Command::Callees { query } => ("callees", Some(query)),
+                Command::Impact { query } => ("impact", Some(query)),
+                _ => unreachable!("handled transport/index command"),
+            };
+            request.action = action.into();
+            request.query = query;
+            let value = engine.execute(&request)?;
+            println!(
+                "{}",
+                if o.json {
+                    serde_json::to_string(&value)?
+                } else {
+                    report::query_text(&value)
+                }
+            );
+            Ok(())
         }
-        Command::Callees { symbol, json } => {
-            let (_, edges) = engine.callees(&symbol)?;
-            print_json(&edges, json, || report::edges_text("callees", &edges))?;
-        }
-        Command::Impact {
-            symbol,
-            depth,
-            json,
-        } => {
-            let (found, rows) = engine.impact(&symbol, depth.clamp(1, 10))?;
-            print_json(&rows, json, || report::impact_text(&found, &rows))?;
-        }
-        Command::Refs { file, json } => {
-            let references = engine.store().references_in_file(&engine.relative(&file))?;
-            print_json(&references, json, || {
-                references
-                    .iter()
-                    .map(|reference| {
-                        format!(
-                            "{}:{}  {}  {}\n",
-                            reference.file,
-                            reference.line,
-                            reference.kind.as_str(),
-                            reference.name
-                        )
-                    })
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })?;
-        }
-        Command::Mcp { .. } | Command::Serve { .. } => unreachable!("handled before queries"),
     }
-    Ok(())
-}
-
-fn print_json<T: Serialize>(
-    value: &T,
-    json: bool,
-    text: impl FnOnce() -> String,
-) -> ast_index::Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(value)?);
-    } else {
-        println!("{}", text());
-    }
-    Ok(())
 }

@@ -128,7 +128,15 @@ pub fn run_socket(server: RpcServer, options: &ServeOptions) -> Result<()> {
         .map_err(|(_file, error)| Error::io(&lock_path, error.into()))?;
 
     if options.socket.exists() {
-        // A socket file without a lock holder is stale.
+        use std::os::unix::fs::FileTypeExt;
+        let metadata = std::fs::symlink_metadata(&options.socket)
+            .map_err(|e| Error::io(&options.socket, e))?;
+        if !metadata.file_type().is_socket() {
+            return Err(Error::Invalid(
+                "refusing to replace a non-socket path".into(),
+            ));
+        }
+        // Only a socket without a lock holder may be replaced.
         std::fs::remove_file(&options.socket).map_err(|error| Error::io(&options.socket, error))?;
     }
     let listener =

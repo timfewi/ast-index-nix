@@ -92,12 +92,11 @@ fn run_cli_json(root: &Path, args: &[&str]) -> Value {
         "ast-index {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "ast-index {args:?} did not emit JSON: {error}\n{}",
-            String::from_utf8_lossy(&output.stdout)
-        )
-    })
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("ast-index {args:?} did not emit JSON: {error}"));
+    // Existing behavior assertions inspect the first bounded page; dedicated
+    // pagination tests below inspect the complete response contract.
+    value.get("items").cloned().unwrap_or(value)
 }
 
 #[test]
@@ -198,7 +197,7 @@ in {
             .as_array()
             .expect("callers")
             .iter()
-            .all(|edge| edge["confidence"] == "exact")
+            .all(|edge| edge["confidence"] == "same_file")
     );
     let callees = run_cli_json(root, &["callees", "right::run", "--json"]);
     assert_eq!(callees[0]["callee"], "nix_helper");
@@ -339,7 +338,7 @@ fn indexes_and_answers_structural_queries() {
         .iter()
         .find(|edge| edge["caller"] == "entry")
         .expect("entry calls run");
-    assert_eq!(entry_edge["confidence"], Value::from("high"));
+    assert_eq!(entry_edge["confidence"], Value::from("same_directory"));
 
     // Transitive impact: helper <- run <- entry.
     let impact = run_cli_json(root, &["impact", "helper", "--depth", "3", "--json"]);
@@ -727,4 +726,941 @@ fn mcp_stdio_rejects_oversized_frame_and_serves_the_next_request() {
     assert_eq!(responses[0]["id"], Value::Null);
     assert_eq!(responses[1]["id"], 2);
     assert_eq!(responses[1]["result"], serde_json::json!({}));
+}
+
+#[test]
+fn resolution_respects_language_projects_and_shadowing() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path();
+    std::fs::write(root.join("main.rs"), "fn entry() { helper(); }").unwrap();
+    std::fs::write(
+        root.join("module.py"),
+        "def helper():\n    pass\ndef shadow(helper):\n    helper()\n",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    for name in ["entry", "shadow"] {
+        assert!(
+            run_cli_json(root, &["callees", name, "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "incorrect edge from {name}"
+        );
+    }
+    for dir in ["one", "two"] {
+        std::fs::create_dir(root.join(dir)).unwrap();
+        std::fs::write(
+            root.join(dir).join("Cargo.toml"),
+            "[package]\nname = 'fixture'\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("one/lib.rs"),
+        "fn local_entry() { crate::foreign(); }",
+    )
+    .unwrap();
+    std::fs::write(root.join("two/lib.rs"), "fn foreign() {}").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert!(
+        run_cli_json(root, &["callees", "local_entry", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn impact_cycles_are_unique_and_exclude_the_seed() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn alpha() { beta(); }\nfn beta() { alpha(); }\nfn gamma() { alpha(); beta(); }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let rows = run_cli_json(root, &["impact", "alpha", "--depth", "4", "--json"]);
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter()
+            .all(|r| r["depth"] == 1 && r["symbol"]["name"] != "alpha")
+    );
+}
+
+#[test]
+fn adding_a_candidate_invalidates_existing_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn helper() {}\nfn entry() { helper(); }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert_eq!(
+        run_cli_json(root, &["callees", "entry", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn helper() {}\nfn helper() {}\nfn entry() { helper(); }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert!(
+        run_cli_json(root, &["callees", "entry", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn raw_json(root: &Path, args: &[&str]) -> Value {
+    let output = run_cli(root, args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn mcp_json(root: &Path, arguments: Value) -> Value {
+    let mut child = Command::new(binary())
+        .arg("--root")
+        .arg(root)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let message = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code_explore","arguments":arguments}});
+    writeln!(child.stdin.take().unwrap(), "{message}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn selectors_pagination_and_frontend_contracts() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("one.rs"),
+        "fn same() {}\nfn caller() { same(); }\nfn a_b() {}\nfn axb() {}",
+    )
+    .unwrap();
+    std::fs::write(root.join("two.rs"), "fn same() {}\nfn same() {}").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let ambiguous = run_cli(root, &["describe", "same", "--json"]);
+    assert!(!ambiguous.status.success());
+    let error: Value = serde_json::from_slice(&ambiguous.stdout).unwrap();
+    assert_eq!(error["error"], "ambiguous_symbol");
+    assert_eq!(error["candidates"].as_array().unwrap().len(), 3);
+    for (file, line) in [("one.rs", "1"), ("two.rs", "2")] {
+        let cli = raw_json(
+            root,
+            &["describe", "same", "--file", file, "--line", line, "--json"],
+        );
+        let mcp = mcp_json(
+            root,
+            serde_json::json!({"action":"describe","query":"same","file":file,"line":line.parse::<u32>().unwrap(),"format":"json"}),
+        );
+        assert_eq!(cli, mcp);
+        assert_eq!(cli["symbol"]["file"], file);
+        assert!(cli["callers"]["items"].is_array());
+    }
+    let page = raw_json(root, &["search", "same", "--limit", "1", "--json"]);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["truncated"], true);
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let next = raw_json(
+        root,
+        &[
+            "search", "same", "--limit", "1", "--cursor", cursor, "--json",
+        ],
+    );
+    assert_ne!(page["items"][0]["id"], next["items"][0]["id"]);
+    assert!(
+        !run_cli(
+            root,
+            &[
+                "search", "caller", "--limit", "1", "--cursor", cursor, "--json"
+            ]
+        )
+        .status
+        .success()
+    );
+    let literal = raw_json(root, &["search", "a_b", "--json"]);
+    assert_eq!(
+        literal["items"].as_array().unwrap().len(),
+        1,
+        "underscore is literal"
+    );
+    run_cli_json(root, &["index", "--json"]);
+    let stale = run_cli(
+        root,
+        &[
+            "search", "same", "--limit", "1", "--cursor", cursor, "--json",
+        ],
+    );
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("stale cursor"));
+    assert!(
+        !run_cli(root, &["outline", "../outside.rs", "--json"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn freshness_checks_bytes_and_reports_incomplete_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("lib.rs");
+    std::fs::write(&file, "fn alpha() {}").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert_eq!(
+        raw_json(root, &["status", "--json"])["freshness"],
+        "unknown"
+    );
+    assert_eq!(
+        raw_json(root, &["freshness", "--json"])["state"],
+        "fresh_at_check"
+    );
+    assert_eq!(
+        raw_json(root, &["status", "--json"])["freshness"],
+        "unknown"
+    );
+    let before = std::fs::metadata(&file).unwrap();
+    std::fs::write(&file, "fn bravo() {}").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(before.modified().unwrap())
+        .unwrap();
+    assert_eq!(raw_json(root, &["freshness", "--json"])["state"], "stale");
+    assert_eq!(raw_json(root, &["status", "--json"])["freshness"], "stale");
+    std::fs::write(&file, "fn broken( { ").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let status = raw_json(root, &["status", "--json"]);
+    assert_eq!(status["freshness"], "incomplete");
+    assert_eq!(status["health"]["parse_error_files"], 1);
+    let changes = raw_json(
+        root,
+        &[
+            "changes",
+            r#"[{"file":"lib.rs","start_line":1,"end_line":1}]"#,
+            "--json",
+        ],
+    );
+    assert_eq!(changes["current_coverage_complete"], false);
+}
+
+#[test]
+fn writer_lock_blocks_indexing_but_allows_queries_and_canonical_aliases() {
+    use nix::fcntl::{Flock, FlockArg};
+    let fixture = fixture();
+    let root = fixture.path();
+    run_cli_json(root, &["index", "--json"]);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".ast-index/index.writer.lock"))
+        .unwrap();
+    let guard = Flock::lock(lock, FlockArg::LockExclusiveNonblock).unwrap();
+    assert!(run_cli(root, &["status", "--json"]).status.success());
+    let blocked = run_cli(root, &["index", "--json"]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("writer busy"));
+    std::os::unix::fs::symlink(
+        root.join(".ast-index/index.sqlite"),
+        root.join("alias.sqlite"),
+    )
+    .unwrap();
+    assert!(
+        !run_cli(
+            root,
+            &[
+                "--db",
+                root.join("alias.sqlite").to_str().unwrap(),
+                "index",
+                "--json"
+            ]
+        )
+        .status
+        .success()
+    );
+    drop(guard);
+    assert!(run_cli(root, &["index", "--json"]).status.success());
+}
+
+#[test]
+fn incomplete_walk_retains_previously_indexed_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let sub = root.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("lib.rs"), "fn retained() {}").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = run_cli(root, &["index", "--json"]);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.status.success());
+    let stats: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(
+        stats["scan_complete"], false,
+        "test requires an unprivileged user"
+    );
+    assert_eq!(
+        raw_json(root, &["search", "retained", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn imports_are_static_bounded_and_do_not_cross_roots() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(root.join("main.nix"), "{ name }: { imports = [ ./module.nix ./missing.nix ../outside.nix ./modules/${name}.nix ]; }").unwrap();
+    std::fs::write(root.join("module.nix"), "{ value = 1; }").unwrap();
+    std::fs::write(
+        root.join("helper.ts"),
+        "export function helper() { return 1; }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("main.js"),
+        "import { helper as renamed } from './helper'; function entry() { renamed(); }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let imports = raw_json(root, &["imports", "main.nix", "--json"]);
+    let rows = imports["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().any(|r| r["target"] == "module.nix"));
+    for reason in ["unknown", "outside_root", "dynamic"] {
+        assert!(rows.iter().any(|r| r["reason"] == reason), "{rows:?}");
+    }
+    assert_eq!(
+        raw_json(root, &["importers", "module.nix", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let cli = raw_json(root, &["deps", "main.js", "--json"]);
+    assert_eq!(
+        cli,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"deps","file":"main.js","format":"json"})
+        )
+    );
+    assert_eq!(cli["items"][0]["target"], "helper.ts");
+    let calls = raw_json(root, &["callees", "entry", "--json"]);
+    assert_eq!(calls["items"][0]["callee"], "helper");
+    // Adding another plausible extension invalidates the old imported edge.
+    std::fs::write(root.join("helper.js"), "export function helper() {}").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert_eq!(
+        raw_json(root, &["imports", "main.js", "--json"])["items"][0]["reason"],
+        "ambiguous"
+    );
+    assert!(
+        raw_json(root, &["callees", "entry", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn maps_and_snapshots_report_actual_structural_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn leaf() {}\nfn entry() { leaf(); removed(); }\nfn removed() {}\n",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert!(!run_cli(root, &["diff", "--json"]).status.success());
+    let map = raw_json(root, &["map", "leaf", "--budget", "1024", "--json"]);
+    assert!(serde_json::to_vec(&map).unwrap().len() <= 1024);
+    assert!(
+        run_cli(root, &["map", "leaf", "--budget", "1024"])
+            .stdout
+            .len()
+            <= 1024
+    );
+    assert_eq!(
+        map,
+        raw_json(root, &["map", "leaf", "--budget", "1024", "--json"])
+    );
+    assert!(!map["items"][0]["signature"].as_str().unwrap().is_empty());
+    assert_eq!(map["items"][0]["symbol"]["name"], "leaf");
+    let first = raw_json(root, &["status", "--json"])["generation"]
+        .as_i64()
+        .unwrap();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn leaf() { let x = 1; }\nfn entry() {}\nfn added() {}\n",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let diff = raw_json(root, &["diff", "--json"]);
+    assert_eq!(diff, raw_json(root, &["diff", "--subtree", ".", "--json"]));
+    let rows = diff["items"].as_array().unwrap();
+    for kind in ["added", "removed", "changed", "relationship_removed"] {
+        assert!(
+            rows.iter().any(|r| r["change"] == kind),
+            "missing {kind}: {diff}"
+        );
+    }
+    let changes = r#"[{"file":"lib.rs","start_line":3,"end_line":3}]"#;
+    let impacted = raw_json(root, &["changes", changes, "--json"]);
+    assert!(
+        impacted["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["origin"] == "baseline" && r["symbol"]["name"] == "removed")
+    );
+    assert!(
+        impacted["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["origin"] == "baseline"
+                && r["symbol"]["name"] == "entry"
+                && r["depth"] == 1)
+    );
+    std::fs::write(root.join("lib.rs"), "fn newest() {}\n").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert!(
+        !run_cli(root, &["diff", "--baseline", &first.to_string(), "--json"])
+            .status
+            .success(),
+        "only two structural snapshots retained"
+    );
+}
+
+#[test]
+fn cli_scip_import_and_mcp_semantic_queries_share_a_contract() {
+    fn field(tag: u8, bytes: &[u8]) -> Vec<u8> {
+        let mut result = vec![tag << 3 | 2];
+        let mut size = bytes.len();
+        while size >= 128 {
+            result.push((size as u8 & 127) | 128);
+            size >>= 7;
+        }
+        result.push(size as u8);
+        result.extend(bytes);
+        result
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let source = "fn helper() {}";
+    std::fs::write(root.join("lib.rs"), source).unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let mut metadata = field(3, b"file:///fixture");
+    metadata.extend([32, 1]);
+    let mut occurrence = field(1, &[0, 3, 9]);
+    occurrence.extend(field(2, b"fixture helper()."));
+    occurrence.extend([24, 1]);
+    let mut document = field(1, b"lib.rs");
+    document.extend(field(2, &occurrence));
+    document.extend(field(4, b"rust"));
+    document.extend(field(5, source.as_bytes()));
+    document.extend([48, 1]);
+    let mut bytes = field(1, &metadata);
+    bytes.extend(field(2, &document));
+    let artifact = root.join("fixture.scip");
+    std::fs::write(&artifact, bytes).unwrap();
+    let imported = raw_json(root, &["import-scip", artifact.to_str().unwrap(), "--json"]);
+    assert_eq!(imported["documents"], 1);
+    let cli = raw_json(root, &["semantic", "--relation", "definition", "--json"]);
+    assert_eq!(
+        cli,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"semantic","relation":"definition","format":"json"})
+        )
+    );
+    assert_eq!(cli["items"][0]["range"], serde_json::json!([0, 3, 0, 9]));
+    assert_eq!(cli["items"][0]["provenance"]["kind"], "scip");
+}
+
+#[test]
+fn unchanged_scans_skip_resolution_but_project_boundaries_invalidate_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("lib.rs"), "fn helper() {}").unwrap();
+    std::fs::write(root.join("src/other.rs"), "fn entry() { crate::helper(); }").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert_eq!(
+        raw_json(root, &["index", "--json"])["resolution_recomputed"],
+        false
+    );
+    std::fs::write(root.join("src/Cargo.toml"), "[package]\nname='other'\n").unwrap();
+    assert_eq!(raw_json(root, &["freshness", "--json"])["state"], "stale");
+    let changed = raw_json(root, &["index", "--json"]);
+    assert_eq!(changed["files_indexed"], 0);
+    assert_eq!(changed["resolution_recomputed"], true);
+    assert!(
+        raw_json(root, &["callees", "entry", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn source_controlled_symlinks_cannot_redirect_default_index_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(external.path(), directory.path().join(".ast-index")).unwrap();
+    assert!(
+        !run_cli(directory.path(), &["index", "--json"])
+            .status
+            .success()
+    );
+    assert!(!external.path().join("index.sqlite").exists());
+}
+
+#[test]
+fn columns_disambiguate_definitions_on_the_same_line() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("same.js"),
+        "function same() {} function same() {}",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    assert!(
+        !run_cli(
+            root,
+            &[
+                "describe", "same", "--file", "same.js", "--line", "1", "--json"
+            ]
+        )
+        .status
+        .success()
+    );
+    let selected = raw_json(
+        root,
+        &[
+            "describe", "same", "--file", "same.js", "--line", "1", "--column", "20", "--json",
+        ],
+    );
+    assert_eq!(selected["symbol"]["start_column"], 20);
+}
+
+#[test]
+fn separate_socket_services_share_readers_and_database_writer_coordination() {
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = fixture();
+    let root = fixture.path();
+    run_cli_json(root, &["index", "--json"]);
+    let mut services = Vec::new();
+    for name in ["one.sock", "two.sock"] {
+        let socket = root.join(name);
+        services.push(Service(
+            Command::new(binary())
+                .arg("--root")
+                .arg(root)
+                .args(["serve", "--socket"])
+                .arg(&socket)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let store = ast_index::store::Store::open(root.join(".ast-index/index.sqlite")).unwrap();
+    let guard = store.write_lock().unwrap();
+    assert!(!run_cli(root, &["index", "--json"]).status.success());
+    for name in ["one.sock", "two.sock"] {
+        let mut stream = std::os::unix::net::UnixStream::connect(root.join(name)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(stream,"{}",serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code_explore","arguments":{"action":"status","format":"json"}}})).unwrap();
+        let response: Value =
+            serde_json::from_str(&read_line(&mut BufReader::new(stream))).unwrap();
+        assert_eq!(response["result"]["isError"], false);
+    }
+    drop(guard);
+    assert!(run_cli(root, &["index", "--json"]).status.success());
+}
+
+#[test]
+fn explicit_database_basename_is_relative_to_working_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("lib.rs"), "fn helper() {}").unwrap();
+    let output = Command::new(binary())
+        .current_dir(directory.path())
+        .args(["--root", ".", "--db", "custom.sqlite", "index", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(directory.path().join("custom.sqlite").is_file());
+}
+
+#[test]
+fn list_actions_page_consistently_and_references_explain_dynamic_imports() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn leaf() {} fn first() { leaf(); } fn second() { leaf(); first(); }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("load.js"),
+        "export async function load(name) { return import(name); }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    for (cli, request) in [
+        (
+            vec!["outline", "lib.rs"],
+            serde_json::json!({"action":"outline","file":"lib.rs"}),
+        ),
+        (
+            vec!["refs", "--file", "lib.rs"],
+            serde_json::json!({"action":"refs","file":"lib.rs"}),
+        ),
+        (
+            vec!["callers", "leaf"],
+            serde_json::json!({"action":"callers","query":"leaf"}),
+        ),
+        (
+            vec!["callees", "second"],
+            serde_json::json!({"action":"callees","query":"second"}),
+        ),
+        (
+            vec!["impact", "leaf"],
+            serde_json::json!({"action":"impact","query":"leaf"}),
+        ),
+    ] {
+        let mut full_args = cli.clone();
+        full_args.push("--json");
+        let full = raw_json(root, &full_args);
+        let mut args = cli.clone();
+        args.extend(["--limit", "1", "--json"]);
+        let first = raw_json(root, &args);
+        let mut request = request;
+        request["limit"] = serde_json::json!(1);
+        request["format"] = serde_json::json!("json");
+        assert_eq!(first, mcp_json(root, request.clone()));
+        assert_eq!(first["truncated"], true);
+        let mut items = first["items"].as_array().unwrap().clone();
+        let mut page = first;
+        while let Some(cursor) = page["next_cursor"].as_str() {
+            request["cursor"] = serde_json::json!(cursor);
+            let mut next_args = args.clone();
+            next_args.extend(["--cursor", cursor]);
+            let next = raw_json(root, &next_args);
+            assert_eq!(next, mcp_json(root, request.clone()));
+            items.extend(next["items"].as_array().unwrap().iter().cloned());
+            page = next;
+        }
+        assert_eq!(items, *full["items"].as_array().unwrap());
+    }
+    let dynamic = raw_json(
+        root,
+        &[
+            "refs",
+            "--kind",
+            "import",
+            "--reason",
+            "dynamic",
+            "--language",
+            "javascript",
+            "--json",
+        ],
+    );
+    assert_eq!(dynamic["items"].as_array().unwrap().len(), 1);
+    assert_eq!(dynamic["items"][0]["file"], "load.js");
+    assert_eq!(
+        dynamic,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"refs","kind":"import","reason":"dynamic","language":"javascript","format":"json"})
+        )
+    );
+    assert_eq!(
+        raw_json(root, &["status", "--json"])["resolution_reasons"]["dynamic"],
+        1
+    );
+}
+
+#[test]
+fn lexical_calls_skip_python_class_names_and_respect_comprehension_and_catch_bindings() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(root.join("scope.py"), "def helper():\n    pass\nclass Container:\n    def helper(self):\n        pass\n    def run(self):\n        helper()\ndef values(items):\n    return [helper() for helper in items]\n").unwrap();
+    std::fs::write(
+        root.join("scope.js"),
+        "function helper() {} function run() { try { work(); } catch(helper) { helper(); } }",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let calls = raw_json(
+        root,
+        &["callees", "Container::run", "--file", "scope.py", "--json"],
+    );
+    assert_eq!(calls["items"][0]["callee"], "helper");
+    for (symbol, file) in [("values", "scope.py"), ("run", "scope.js")] {
+        assert!(
+            raw_json(root, &["callees", symbol, "--file", file, "--json"])["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn writer_rechecks_root_ownership_and_version_drift_invalidates_caches() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let db = first.path().join("shared.sqlite");
+    let owner = ast_index::Engine::open(first.path(), Some(db.clone())).unwrap();
+    let contender = ast_index::Engine::open(second.path(), Some(db.clone())).unwrap();
+    std::fs::write(first.path().join("lib.rs"), "fn helper() {}").unwrap();
+    owner.index(&Default::default()).unwrap();
+    let generation = owner.store().generation().unwrap();
+    assert!(
+        contender
+            .index(&Default::default())
+            .unwrap_err()
+            .to_string()
+            .contains("different indexed root")
+    );
+    assert_eq!(owner.store().generation().unwrap(), generation);
+    assert!(
+        contender
+            .execute(&ast_index::query::Query {
+                action: "status".into(),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("different indexed root")
+    );
+    owner
+        .store()
+        .set_meta("resolution_version", "old-rules")
+        .unwrap();
+    assert_eq!(owner.status().unwrap().freshness, "stale");
+    let updated = owner.index(&Default::default()).unwrap();
+    assert_eq!(updated.files_indexed, 0);
+    assert!(updated.resolution_recomputed);
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute("UPDATE files SET fingerprint='old-extraction'", [])
+        .unwrap();
+    assert_eq!(owner.index(&Default::default()).unwrap().files_indexed, 1);
+}
+
+#[test]
+fn hoisted_reassigned_and_aliased_values_never_resolve_to_outer_functions() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let sources = [
+        (
+            "var.js",
+            "function helper() {} function entry() { if (true) { var helper = other; } helper(); }",
+        ),
+        (
+            "assign.js",
+            "function helper() {} function entry() { helper = other; helper(); }",
+        ),
+        (
+            "capture.js",
+            "function helper() {} function mutate() { helper = other; } function entry() { helper(); }",
+        ),
+        (
+            "pattern.js",
+            "function helper() {} function entry({ callback: helper }) { helper(); }",
+        ),
+        (
+            "default.js",
+            "function helper() {} function entry({ callback: helper = other }) { helper(); }",
+        ),
+        (
+            "except.py",
+            "def helper():\n    pass\ndef entry():\n    try:\n        work()\n    except Error as helper:\n        helper()\n",
+        ),
+        (
+            "with.py",
+            "def helper():\n    pass\ndef entry():\n    with context() as helper:\n        helper()\n",
+        ),
+    ];
+    for (name, source) in sources {
+        std::fs::write(root.join(name), source).unwrap();
+    }
+    let indexed = raw_json(root, &["index", "--json"]);
+    assert_eq!(indexed["parse_error_files"], 0);
+    for (name, _) in sources {
+        let calls = raw_json(root, &["callees", "entry", "--file", name, "--json"]);
+        assert!(
+            calls["items"].as_array().unwrap().is_empty(),
+            "false call from {name}: {calls}"
+        );
+    }
+    let refs = raw_json(
+        root,
+        &["refs", "assign.js", "--reason", "reassigned", "--json"],
+    );
+    assert_eq!(refs["items"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn named_imports_require_named_top_level_exports() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for (name, source) in [
+        ("default.ts", "export default function helper() {}"),
+        ("class.ts", "export class Container { helper() {} }"),
+        (
+            "named.ts",
+            "export function helper() {} export const arrow = () => {};",
+        ),
+        (
+            "main.js",
+            "import { helper as one } from './default'; import { helper as two } from './class'; import { helper as three, arrow } from './named'; function entry() { one(); two(); three(); arrow(); }",
+        ),
+    ] {
+        std::fs::write(root.join(name), source).unwrap();
+    }
+    run_cli_json(root, &["index", "--json"]);
+    let typed = raw_json(
+        root,
+        &[
+            "callees",
+            "entry",
+            "--file",
+            "main.js",
+            "--language",
+            "typescript",
+            "--json",
+        ],
+    );
+    assert_eq!(typed["items"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        typed["items"][0]["file"], "main.js",
+        "edge locations remain call sites"
+    );
+    assert!(
+        raw_json(
+            root,
+            &[
+                "callees",
+                "entry",
+                "--file",
+                "main.js",
+                "--language",
+                "javascript",
+                "--json"
+            ]
+        )["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let refs = raw_json(root, &["refs", "main.js", "--kind", "call", "--json"]);
+    let rows = refs["items"].as_array().unwrap();
+    for name in ["one", "two"] {
+        let row = rows.iter().find(|r| r["name"] == name).unwrap();
+        assert!(row["resolved"].is_null(), "{row}");
+    }
+    for name in ["three", "arrow"] {
+        let row = rows.iter().find(|r| r["name"] == name).unwrap();
+        assert_eq!(row["reason"], "imported_symbol", "{row}");
+        assert!(row["resolved"].is_number());
+    }
+}
+
+#[test]
+fn member_namespaces_and_rust_modules_do_not_leak_bare_bindings() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("class.js"),
+        "function helper() {} class Container { helper() {} entry() { helper(); } }",
+    )
+    .unwrap();
+    std::fs::write(root.join("lib.rs"), "fn helper() {} struct Container; impl Container { fn helper(&self) {} fn entry() { helper(); } fn receiver(&self) { self.helper(); } } mod nested { fn entry() { helper(); } fn explicit() { super::helper(); } }").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    for file in ["class.js", "lib.rs"] {
+        let calls = raw_json(
+            root,
+            &["callees", "Container::entry", "--file", file, "--json"],
+        );
+        assert_eq!(calls["items"][0]["callee"], "helper");
+    }
+    assert!(
+        raw_json(
+            root,
+            &["callees", "nested::entry", "--file", "lib.rs", "--json"]
+        )["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        raw_json(
+            root,
+            &["callees", "nested::explicit", "--file", "lib.rs", "--json"]
+        )["items"][0]["callee"],
+        "helper"
+    );
+    assert_eq!(
+        raw_json(
+            root,
+            &[
+                "callees",
+                "Container::receiver",
+                "--file",
+                "lib.rs",
+                "--json"
+            ]
+        )["items"][0]["callee"],
+        "Container::helper"
+    );
 }

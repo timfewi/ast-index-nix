@@ -1,187 +1,237 @@
-//! Name-based reference resolution.
-//!
-//! Resolution is deliberately precision-first: a reference is only linked when
-//! the narrowest scope (same file, then same directory, then whole index) holds
-//! exactly one candidate. Ambiguous names stay unresolved and are reported as
-//! plain references instead of guessed edges. This mirrors documented limits of
-//! heuristic indexers and avoids inventing edges for dynamic dispatch, macros or
-//! same-named methods.
-//!
-//! Scoped calls such as `Store::open` carry a full path. Those are tried against
-//! qualified names first, which avoids linking `Store::open` to a same-file
-//! `Engine::open`; the bare name is only a fallback.
+//! Conservative resolution from lexical bindings, literal module paths and
+//! supported named imports. There is no directory/global bare-name fallback.
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::model::Confidence;
 use crate::store::{RefRow, Store, SymbolRow};
 
+/// Invalidate edges independently of extraction when resolution rules change.
+pub fn fingerprint() -> String {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        let mut hash = blake3::Hasher::new();
+        hash.update(include_bytes!("resolve.rs"));
+        hash.update(include_bytes!("imports.rs"));
+        hash.update(include_bytes!("index.rs"));
+        hash.finalize().to_hex().to_string()
+    })
+    .clone()
+}
+
 /// Outcome of one resolution pass.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionStats {
     pub resolved: usize,
     pub ambiguous: usize,
     pub unmatched: usize,
-    pub exact: usize,
-    pub high: usize,
-    pub low: usize,
+    pub same_file: usize,
+    pub same_directory: usize,
+    pub same_project: usize,
 }
 
-/// Scope ladders for bare names and qualified names.
+/// Candidate maps are partitioned by indexed file or explicit project/module.
 #[derive(Default)]
 struct ScopeMaps {
-    name_by_file: HashMap<(String, String), Vec<i64>>,
-    name_by_dir: HashMap<(String, String), Vec<i64>>,
-    name_global: HashMap<String, Vec<i64>>,
     qualified_by_file: HashMap<(String, String), Vec<i64>>,
-    qualified_by_dir: HashMap<(String, String), Vec<i64>>,
-    qualified_global: HashMap<String, Vec<i64>>,
+    rust_modules: HashMap<String, Vec<i64>>,
+    exported: HashMap<(String, String), Vec<i64>>,
+    imports: HashMap<(String, String), String>,
+    files: HashMap<i64, String>,
 }
 
 impl ScopeMaps {
     fn build(symbols: &[SymbolRow]) -> Self {
         let mut maps = Self::default();
         for symbol in symbols {
+            maps.files.insert(symbol.id, symbol.file.clone());
             maps.qualified_by_file
                 .entry((symbol.file.clone(), symbol.qualified.clone()))
                 .or_default()
                 .push(symbol.id);
-            // Nix targets are selected lexically by the parser and stay local.
-            // Never offer Nix bindings to another language's name heuristics.
-            if symbol.language == "nix" {
-                continue;
+            if symbol.exported {
+                maps.exported
+                    .entry((symbol.file.clone(), symbol.name.clone()))
+                    .or_default()
+                    .push(symbol.id);
             }
-            maps.name_by_file
-                .entry((symbol.file.clone(), symbol.name.clone()))
-                .or_default()
-                .push(symbol.id);
-            maps.name_by_dir
-                .entry((symbol.directory.clone(), symbol.name.clone()))
-                .or_default()
-                .push(symbol.id);
-            maps.name_global
-                .entry(symbol.name.clone())
-                .or_default()
-                .push(symbol.id);
-            maps.qualified_by_dir
-                .entry((symbol.directory.clone(), symbol.qualified.clone()))
-                .or_default()
-                .push(symbol.id);
-            maps.qualified_global
-                .entry(symbol.qualified.clone())
-                .or_default()
-                .push(symbol.id);
+            if symbol.language == "rust" {
+                let module = rust_module(&symbol.file, &symbol.project);
+                let qualified = if module.is_empty() {
+                    symbol.qualified.clone()
+                } else {
+                    format!("{module}::{}", symbol.qualified)
+                };
+                maps.rust_modules
+                    .entry(scoped_key("rust", &symbol.project, &qualified))
+                    .or_default()
+                    .push(symbol.id);
+            }
         }
         maps
     }
 
-    /// Qualified-first for scoped references. The bare-name fallback is only
-    /// applied for relative paths (`crate::`, `self::`, `super::`), so external
-    /// paths such as `Connection::open` are never linked to a same-named local
-    /// definition by accident.
-    fn candidates(&self, reference: &RefRow) -> Option<(i64, Confidence)> {
-        if reference.language == "nix" {
-            return self
-                .qualified_by_file
-                .get(&(reference.file.clone(), reference.path.clone()?))
-                .and_then(|ids| single(ids, Confidence::Exact));
-        }
-        if let Some(path) = &reference.path {
-            let qualified = pick(
-                self.qualified_by_file
-                    .get(&(reference.file.clone(), path.clone())),
-                self.qualified_by_dir
-                    .get(&(reference.directory.clone(), path.clone())),
-                self.qualified_global.get(path),
-            );
-            if qualified.is_some() {
-                return qualified;
-            }
-            let head = path.split("::").next().unwrap_or_default();
-            if matches!(head, "crate" | "self" | "super") {
-                return self.bare(reference);
-            }
+    fn ids(&self, reference: &RefRow) -> Option<&Vec<i64>> {
+        if reference.blocked.is_some() {
             return None;
         }
-        self.bare(reference)
+        if let Some((module, name)) = imported_name(reference) {
+            let target = self.imports.get(&(reference.file.clone(), module))?;
+            return self.exported.get(&(target.clone(), name));
+        }
+        if let Some(path) = rust_relative(reference) {
+            return self
+                .rust_modules
+                .get(&scoped_key("rust", &reference.project, &path));
+        }
+        let path = reference.path.as_ref()?;
+        self.qualified_by_file
+            .get(&(reference.file.clone(), path.clone()))
     }
 
-    /// The same-name scope ladder.
-    fn bare(&self, reference: &RefRow) -> Option<(i64, Confidence)> {
-        pick(
-            self.name_by_file
-                .get(&(reference.file.clone(), reference.name.clone())),
-            self.name_by_dir
-                .get(&(reference.directory.clone(), reference.name.clone())),
-            self.name_global.get(&reference.name),
-        )
+    fn candidates(&self, reference: &RefRow) -> Option<(i64, Confidence)> {
+        let [id] = self.ids(reference)?.as_slice() else {
+            return None;
+        };
+        let target = &self.files[id];
+        let confidence = if target == &reference.file {
+            Confidence::Exact
+        } else if crate::store::directory_of(target) == reference.directory {
+            Confidence::High
+        } else {
+            Confidence::Low
+        };
+        Some((*id, confidence))
     }
 
-    /// Whether any candidate existed at all, to separate ambiguous from unknown.
-    fn known(&self, reference: &RefRow) -> bool {
-        if reference.language == "nix" {
-            return reference.path.as_ref().is_some_and(|path| {
-                self.qualified_by_file
-                    .contains_key(&(reference.file.clone(), path.clone()))
-            });
+    fn reason<'a>(&self, reference: &'a RefRow) -> &'a str {
+        if let Some(reason) = &reference.blocked {
+            return reason;
         }
-        let qualified_known = reference
-            .path
-            .as_ref()
-            .map(|path| {
-                self.qualified_global.contains_key(path)
-                    || self
-                        .qualified_by_file
-                        .contains_key(&(reference.file.clone(), path.clone()))
-                    || self
-                        .qualified_by_dir
-                        .contains_key(&(reference.directory.clone(), path.clone()))
-            })
-            .unwrap_or(false);
-        if qualified_known {
-            return true;
-        }
-        if let Some(path) = &reference.path {
-            let head = path.split("::").next().unwrap_or_default();
-            if !matches!(head, "crate" | "self" | "super") {
-                return false;
+        if let Some(ids) = self.ids(reference) {
+            if ids.len() > 1 {
+                return "ambiguous";
             }
+            if imported_name(reference).is_some() {
+                return "imported_symbol";
+            }
+            if rust_relative(reference).is_some() {
+                return "static_module_path";
+            }
+            return "lexical_same_file";
         }
-        self.name_global.contains_key(&reference.name)
-            || self
-                .name_by_file
-                .contains_key(&(reference.file.clone(), reference.name.clone()))
-            || self
-                .name_by_dir
-                .contains_key(&(reference.directory.clone(), reference.name.clone()))
+        if imported_name(reference).is_some() {
+            "unsupported_import"
+        } else if rust_relative(reference).is_some() {
+            "unknown"
+        } else if reference.path.is_some() && reference.language != "nix" {
+            "external"
+        } else {
+            "unsupported"
+        }
     }
 }
 
-/// Resolve every unresolved call reference in the store.
+fn imported_name(reference: &RefRow) -> Option<(String, String)> {
+    serde_json::from_str(reference.path.as_deref()?.strip_prefix("@import:")?).ok()
+}
+
+fn rust_module(file: &str, project: &str) -> String {
+    let relative = if project.is_empty() {
+        file
+    } else {
+        file.strip_prefix(project)
+            .unwrap_or(file)
+            .trim_start_matches('/')
+    };
+    let relative = relative.strip_prefix("src/").unwrap_or(relative);
+    let path = std::path::Path::new(relative);
+    let mut parts: Vec<_> = path
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.iter())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        && !matches!(stem, "lib" | "main" | "mod")
+    {
+        parts.push(stem.into());
+    }
+    parts.join("::")
+}
+
+fn rust_relative(reference: &RefRow) -> Option<String> {
+    if reference.language != "rust" {
+        return None;
+    }
+    let path = reference.path.as_deref()?;
+    if let Some(rest) = path.strip_prefix("crate::") {
+        return Some(rest.into());
+    }
+    let (head, rest) = path.split_once("::")?;
+    if !matches!(head, "self" | "super" | "local_module") {
+        return None;
+    }
+    let mut module = rust_module(&reference.file, &reference.project);
+    if head == "super" {
+        module = module
+            .rsplit_once("::")
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_default();
+    }
+    Some(if module.is_empty() {
+        rest.into()
+    } else {
+        format!("{module}::{rest}")
+    })
+}
+
+fn scoped_key(language: &str, project: &str, name: &str) -> String {
+    let family = if matches!(language, "javascript" | "typescript") {
+        "ecmascript"
+    } else {
+        language
+    };
+    format!("{family}\0{project}\0{name}")
+}
+
+/// Resolve every call reference in the store.
 pub fn resolve_all(store: &Store) -> Result<ResolutionStats> {
     let symbols = store.resolution_symbols()?;
     let references = store.resolution_refs()?;
-    let maps = ScopeMaps::build(&symbols);
+    let mut maps = ScopeMaps::build(&symbols);
+    maps.imports = store.conn.prepare("SELECT f.path, r.name, r.import_target FROM refs r JOIN files f ON f.id=r.file_id WHERE r.kind='import' AND r.import_target IS NOT NULL")?
+        .query_map([], |r| Ok(((r.get(0)?,r.get(1)?),r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
 
     let mut stats = ResolutionStats::default();
     for reference in &references {
         match maps.candidates(reference) {
             Some((symbol_id, confidence)) => {
-                store.set_resolution(reference.id, Some(symbol_id), confidence)?;
+                store.set_resolution(
+                    reference.id,
+                    Some(symbol_id),
+                    confidence,
+                    maps.reason(reference),
+                )?;
                 stats.resolved += 1;
                 match confidence {
-                    Confidence::Exact => stats.exact += 1,
-                    Confidence::High => stats.high += 1,
-                    Confidence::Low => stats.low += 1,
+                    Confidence::Exact => stats.same_file += 1,
+                    Confidence::High => stats.same_directory += 1,
+                    Confidence::Low => stats.same_project += 1,
                     Confidence::None => {}
                 }
             }
             None => {
-                store.set_resolution(reference.id, None, Confidence::None)?;
-                if maps.known(reference) {
+                store.set_resolution(
+                    reference.id,
+                    None,
+                    Confidence::None,
+                    maps.reason(reference),
+                )?;
+                if maps.reason(reference) == "ambiguous" {
                     stats.ambiguous += 1;
                 } else {
                     stats.unmatched += 1;
@@ -192,149 +242,75 @@ pub fn resolve_all(store: &Store) -> Result<ResolutionStats> {
     Ok(stats)
 }
 
-/// Choose a target from the narrowest scope that has any candidate.
-pub fn pick(
-    same_file: Option<&Vec<i64>>,
-    same_directory: Option<&Vec<i64>>,
-    global: Option<&Vec<i64>>,
-) -> Option<(i64, Confidence)> {
-    if let Some(candidates) = same_file {
-        return single(candidates, Confidence::Exact);
-    }
-    if let Some(candidates) = same_directory {
-        return single(candidates, Confidence::High);
-    }
-    if let Some(candidates) = global {
-        return single(candidates, Confidence::Low);
-    }
-    None
-}
-
-fn single(candidates: &[i64], confidence: Confidence) -> Option<(i64, Confidence)> {
-    match candidates {
-        [only] => Some((*only, confidence)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    fn symbol(id: i64, file: &str, qualified: &str) -> SymbolRow {
+        SymbolRow {
+            id,
+            language: "rust".into(),
+            project: String::new(),
+            exported: false,
+            file: file.into(),
+            directory: crate::store::directory_of(file),
+            name: qualified.rsplit("::").next().unwrap().into(),
+            qualified: qualified.into(),
+        }
+    }
+    fn reference(file: &str, path: &str) -> RefRow {
+        RefRow {
+            id: 9,
+            language: "rust".into(),
+            project: String::new(),
+            file: file.into(),
+            directory: crate::store::directory_of(file),
+            name: path.rsplit("::").next().unwrap().into(),
+            path: Some(path.into()),
+            kind: crate::model::RefKind::Call,
+            blocked: None,
+        }
+    }
     #[test]
-    fn prefers_file_scope_over_directory_and_global() {
-        let file = vec![1];
-        let directory = vec![2];
-        let global = vec![3];
+    fn scoped_references_follow_literal_module_paths() {
+        let maps = ScopeMaps::build(&[
+            symbol(1, "src/engine.rs", "open"),
+            symbol(2, "src/store.rs", "open"),
+        ]);
         assert_eq!(
-            pick(Some(&file), Some(&directory), Some(&global)),
+            maps.candidates(&reference("src/engine.rs", "crate::store::open")),
+            Some((2, Confidence::High))
+        );
+        assert_eq!(
+            maps.candidates(&reference("src/engine.rs", "Store::open")),
+            None,
+            "an external type is not a local module"
+        );
+    }
+    #[test]
+    fn crate_paths_never_fall_back_to_a_same_named_nested_function() {
+        let maps = ScopeMaps::build(&[symbol(1, "src/lib.rs", "nested::helper")]);
+        assert_eq!(
+            maps.candidates(&reference("src/lib.rs", "crate::helper")),
+            None
+        );
+        assert_eq!(
+            maps.candidates(&reference("src/lib.rs", "crate::nested::helper")),
             Some((1, Confidence::Exact))
         );
     }
-
-    #[test]
-    fn falls_back_when_narrower_scope_is_empty() {
-        let directory = vec![2];
-        let global = vec![3];
-        assert_eq!(
-            pick(None, Some(&directory), Some(&global)),
-            Some((2, Confidence::High))
-        );
-        assert_eq!(pick(None, None, Some(&global)), Some((3, Confidence::Low)));
-    }
-
     #[test]
     fn ambiguous_names_stay_unresolved() {
-        let file = vec![1, 2];
-        let global = vec![1, 2];
-        assert_eq!(pick(Some(&file), None, Some(&global)), None);
+        let maps =
+            ScopeMaps::build(&[symbol(1, "lib.rs", "helper"), symbol(2, "lib.rs", "helper")]);
+        let call = reference("lib.rs", "helper");
+        assert_eq!(maps.candidates(&call), None);
+        assert_eq!(maps.reason(&call), "ambiguous");
     }
-
-    #[test]
-    fn unknown_names_stay_unresolved() {
-        assert_eq!(pick(None, None, None), None);
-    }
-
-    #[test]
-    fn scoped_references_prefer_qualified_names() {
-        let maps = ScopeMaps::build(&[
-            SymbolRow {
-                id: 1,
-                language: "rust".to_string(),
-                file: "src/engine.rs".to_string(),
-                directory: "src".to_string(),
-                name: "open".to_string(),
-                qualified: "engine::open".to_string(),
-            },
-            SymbolRow {
-                id: 2,
-                language: "rust".to_string(),
-                file: "src/store.rs".to_string(),
-                directory: "src".to_string(),
-                name: "open".to_string(),
-                qualified: "store::open".to_string(),
-            },
-        ]);
-        let reference = RefRow {
-            id: 9,
-            language: "rust".to_string(),
-            file: "src/engine.rs".to_string(),
-            directory: "src".to_string(),
-            name: "open".to_string(),
-            path: Some("store::open".to_string()),
-            kind: crate::model::RefKind::Call,
-        };
-        assert_eq!(
-            maps.candidates(&reference),
-            Some((2, Confidence::High)),
-            "the scoped path must win over the same-file bare name"
-        );
-    }
-
-    #[test]
-    fn scoped_references_fall_back_to_the_bare_name() {
-        let maps = ScopeMaps::build(&[SymbolRow {
-            id: 1,
-            language: "rust".to_string(),
-            file: "src/lib.rs".to_string(),
-            directory: "src".to_string(),
-            name: "run".to_string(),
-            qualified: "run".to_string(),
-        }]);
-        // `crate::run()` from another file has no qualified match.
-        let reference = RefRow {
-            id: 9,
-            language: "rust".to_string(),
-            file: "src/other.rs".to_string(),
-            directory: "src".to_string(),
-            name: "run".to_string(),
-            path: Some("crate::run".to_string()),
-            kind: crate::model::RefKind::Call,
-        };
-        assert_eq!(maps.candidates(&reference), Some((1, Confidence::High)));
-    }
-
     #[test]
     fn external_scoped_paths_do_not_fall_back_to_local_names() {
-        let maps = ScopeMaps::build(&[SymbolRow {
-            id: 1,
-            language: "rust".to_string(),
-            file: "src/store.rs".to_string(),
-            directory: "src".to_string(),
-            name: "open".to_string(),
-            qualified: "store::open".to_string(),
-        }]);
-        // `Connection::open` is an external type and must not link to `Store::open`.
-        let reference = RefRow {
-            id: 9,
-            language: "rust".to_string(),
-            file: "src/store.rs".to_string(),
-            directory: "src".to_string(),
-            name: "open".to_string(),
-            path: Some("connection::open".to_string()),
-            kind: crate::model::RefKind::Call,
-        };
-        assert_eq!(maps.candidates(&reference), None);
-        assert!(!maps.known(&reference));
+        let maps = ScopeMaps::build(&[symbol(1, "lib.rs", "Store::open")]);
+        let call = reference("lib.rs", "Connection::open");
+        assert_eq!(maps.candidates(&call), None);
+        assert_eq!(maps.reason(&call), "external");
     }
 }

@@ -10,8 +10,8 @@ file and exposes the result through three frontends that share one library:
   persistent Unix socket service and a byte-level proxy as the only harness-facing
   process.
 
-The design mirrors a local research service: the index lives in a daemon behind a
-socket, and every harness talks to the same warm index through a tiny proxy.
+For shared use, an optional socket service keeps one warm index available to
+multiple harnesses through a tiny proxy. In-process CLI and stdio use remain available.
 There is no telemetry, no network access and no LLM dependency.
 
 The Nix package, development shell, formatter and module checks export
@@ -89,53 +89,150 @@ The server returns setup guidance instead of an error when a repository is not
 indexed yet, so an agent does not conclude that the tool is broken. Indexing is
 explicit: run `ast-index index` once (or `serve --index`).
 
-## The single tool
+## Queries
 
-`code_explore` takes an `action`:
+CLI and the single MCP tool `code_explore` share these actions:
 
-| action | meaning |
+| Action | Purpose |
 | --- | --- |
-| `status` | index coverage and counts |
-| `search` | find definitions by name or qualified name |
-| `outline` | list the definitions of one file |
-| `describe` | one symbol with callers and callees |
-| `callers` / `callees` | one edge direction |
-| `impact` | transitive callers up to `depth` |
+| `status` / `freshness` | Snapshot coverage / explicitly compare current bytes |
+| `search` / `outline` | Literal name search / definitions in a file |
+| `describe` | One selected symbol and both edge directions |
+| `callers` / `callees` / `impact` | Incoming, outgoing and unique transitive callers |
+| `refs` | References with resolution evidence or unresolved reasons |
+| `imports` / `importers` / `deps` | Import records, reverse importers and resolved file dependencies |
+| `map` | Heuristically ranked signatures within a byte budget |
+| `changes` / `diff` | Explicit changed-range impact / retained snapshot differences |
+| `semantic` | Separately identified SCIP definitions, references or implementations |
 
-`format: "json"` switches to JSON; `text` is the default because it is more
-token-efficient. MCP request frames are limited to 1 MiB; an oversized frame
-gets an error and the next request can still be served. Tool result text is
-limited to 64 KiB in either format so one call cannot flood the model context.
+```bash
+ast-index describe helper --file src/lib.rs --line 12
+ast-index describe same --file src/main.js --line 1 --column 20
+ast-index search parse --subtree src --language rust --kind function --match-mode prefix
+ast-index refs src/main.py --reason shadowed
+ast-index imports flake.nix
+ast-index importers modules/service.nix
+ast-index map resolve_all --budget 8192
+ast-index freshness --json
+ast-index changes '[{"file":"src/lib.rs","start_line":10,"end_line":20}]' --json
+ast-index diff --json
+```
 
-## What it does and does not resolve
+File and subtree paths are relative to the indexed root. Symbol selection is
+exact and case-sensitive; ambiguous responses contain candidate locations.
+Lines and AST columns are one-based; columns count UTF-8 bytes. `search` defaults
+to case-normalized literal substring matching, with `exact` and `prefix` modes;
+`%` and `_` are literal characters, not user wildcards.
 
-Extraction uses tree-sitter tag queries and covers Rust, Python, TypeScript,
-TSX, JavaScript and Nix. Call edges are resolved by name with a precision-first
-scope ladder:
+`--json` and MCP `format: "json"` return the same payloads. Lists now return
+`{items, generation, truncated, next_cursor}`, replacing the old bare arrays.
+Use `--limit` (1–100, default 25) and repeat the same query with `--cursor` to
+continue. Cursors belong to that database and query and expire after a committed
+index generation changes. Text output also reports continuation information.
+`describe` contains `symbol`, `callers` and `callees`; its two nested pages can be
+continued independently using their respective cursors with the same request.
+Row ids are snapshot-local, not permanent symbol identifiers.
 
-1. exactly one match in the same file → `exact`,
-2. exactly one match in the same directory → `high`,
-3. exactly one match in the whole index → `low`,
-4. ambiguous or unknown → unresolved, reported as a plain reference.
+File/subtree/language/kind filters apply to structural lists. For graph queries,
+file and position select the seed; subtree/language/kind restrict returned rows.
+Reference `kind` is `call` or `import`. Snapshot diffs support file/subtree;
+changed-impact accepts explicit ranges rather than symbol filters. Semantic
+queries support an exact file filter and an optional symbol or display name.
 
-Scoped calls such as `Store::open` are matched against qualified names first, so
-they never collapse onto a same-named local method. External paths such as
-`Connection::open` stay unresolved on purpose: linking them to a local `open`
-would be a guess. Dynamic dispatch, macros, reflection, generated code and
-same-named methods reached through a value are **not** resolved. Treat every edge
-as a hint and read the file before editing.
+## Coverage and freshness
 
-Nix outlines include static `let` and attribute bindings, dotted attribute paths,
-named lambdas (including formal argument sets), and nested attribute sets.
-Static `inherit` attributes are also listed. Bindings use the existing
-`function`, `module` and `const` kinds. Literal `import`, `builtins.import` and
-`imports = [ ... ]` paths are recorded without following them. Curried
-applications contribute one named call site.
-Nix call edges only link a unique, directly defined function visible in the same
-file's `let` or recursive attribute scope. Parameters, aliases, inherited values,
-selected calls (`lib.mkIf`), dynamic attributes, `with` and cross-file targets
-remain unresolved. Nix is never evaluated and paths with interpolation are not
-reported as literal imports.
+Status reports index age, generation, failures, skipped files, parse-error
+coverage, resolution reasons and indexed/current extraction and resolution
+versions. Ordinary status says `unknown` for present freshness unless there is
+known stale or incomplete evidence. A `freshness` scan hashes source bytes,
+including same-size/same-mtime edits, and reports `fresh_at_check`, `stale` or
+`incomplete`. A past successful scan never makes a later status claim perpetual
+freshness. Indexing and freshness store derived metadata, never source edits.
+
+Failed directory scans retain absent old rows. Parse errors and retained failed
+files remain incomplete coverage. Parser/query changes invalidate cached
+extraction; resolver changes or project-boundary changes invalidate call edges.
+An unchanged pass reuses resolution. No watcher is required for correctness.
+
+Definitions cover Rust, Python, TypeScript/TSX, JavaScript and Nix. Call targets
+need supported lexical bindings, literal Rust module paths or supported named
+imports. JS/TS named imports can interoperate across indexed files with direct named exports;
+default exports and class members are not treated as named module exports. There is no
+fallback to an unrelated same-named symbol in another file or project. Parameters,
+assignments, ambiguous names, inferred receiver types, re-exports and unsupported
+indirection remain unresolved. Confidence labels describe scope (`same_file`,
+`same_directory`, `same_project`, `none`); `reason` describes evidence. They are
+navigation hints, not compiler proofs.
+
+Nix static bindings, nested attributes, inherited names and named lambdas remain
+indexed. Nix call edges stay within statically visible same-file lexical scopes.
+Literal imports can link already indexed files; dynamic imports are explicitly
+unresolved. No Nix expression or imported path is evaluated or followed.
+
+`map` uses static graph counts and optional focus, with bounded signatures and a
+1024–32768 byte budget. Token counts are explicitly approximate. `diff` retains
+only two bounded structural snapshots, reports unique symbol/content and call
+relationship changes, and flags duplicate comparison identities. `changes` also
+consults the retained baseline so deleted symbols remain visible. Supplied line
+ranges are applied to both snapshots; coordinates can differ after line shifts.
+Missing baselines, incomplete snapshots and unsupported ranges are reported.
+
+## Optional precomputed SCIP data
+
+```bash
+ast-index import-scip ./index.scip --manifest ./index.sources.json
+ast-index semantic --relation definition --json
+ast-index semantic 'producer package symbol' --relation reference --json
+ast-index semantic 'producer package Base#' --relation implementation --json
+```
+
+Import is CLI-only and explicit. It never launches an indexer or compiler. The
+supported subset is binary SCIP protocol version 0, UTF-8 source, definitions,
+references and explicitly flagged implementation relationships. Both deprecated
+and typed ranges are supported; typed ranges take precedence. Position encoding
+must be explicit UTF-8, UTF-16 or UTF-32. Semantic ranges are zero-based and
+half-open, with the encoding returned alongside results.
+
+Documents must already be indexed and must match current source bytes. Embedded
+`Document.text` can establish the source snapshot. Otherwise the **artifact
+producer** must supply a manifest generated alongside the artifact:
+
+```json
+{
+  "artifact_blake3": "BLAKE3 hex digest of the .scip file",
+  "files": { "src/lib.rs": "BLAKE3 hex digest of source bytes at generation time" }
+}
+```
+
+The importer never manufactures freshness evidence from today's files. Paths
+must be canonical relative paths without symlinks. Artifact root metadata never
+grants filesystem access. All participating source hashes are rechecked during
+semantic queries; any mismatch excludes the artifact's results. Provenance
+includes producer name/version and artifact digest. External-symbol metadata,
+hover documentation, producer arguments and unsupported relationship kinds are
+not imported. Semantic references never become AST call edges.
+
+## Resource limits and local state
+
+Normal indexing caps source files at 2 MiB each, scans at 100,000 source files and
+256 MiB, and stored symbols/references at 200,000/500,000. Traversal errors or scan
+caps produce incomplete coverage; storage caps abort the update. Graph work is
+bounded to 20,000 inspected incoming ids and ten hops. Queries also have a SQLite
+VM instruction budget. Exact/prefix search uses indexes; substring search scans.
+
+MCP request frames are capped at 1 MiB; tool text at 64 KiB. SQL pages and byte
+budgets apply before responses are rendered. SCIP artifacts are capped at 4 MiB,
+2,000 documents, 100,000 occurrences and 50,000 symbol records. Semantic source
+verification has a 128 MiB aggregate budget; Unicode range validation has a
+separate 128 MiB line-scan work budget. Oversized or unsupported work returns
+an actionable error or explicit incomplete state.
+
+Each indexing/import operation owns a lock beside the canonical database.
+Separate sockets may share readers; a competing writer gets a busy error. The
+socket lock owns only the listener. Index paths are root-bound; after relocating
+a checkout, use a new local database. The default index directory/database cannot
+be redirected through a symlink. Local derived state contains source signatures
+and should remain gitignored with the same privacy treatment as source code.
 
 ## NixOS service
 
@@ -164,8 +261,8 @@ a host module such as:
 The consuming host creates the service account and supplies an existing root
 directory writable by that account.
 
-Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. The service
-holds an exclusive lock, so a second writer cannot open the same index, and the
+Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. Each mutation
+holds the database writer lock; socket ownership is separate. The
 socket is created with mode `0600` inside a `0750` runtime directory, so only the
 service user can connect.
 
@@ -187,48 +284,3 @@ and all-system flake evaluation without building the package or system closure.
 
 Source, comments and documentation are in English. Runtime state and
 credentials never enter the repository; the index is local and gitignored.
-
-## Portability checkpoint (2026-09-30)
-
-- Both Linux package, shell, formatter and module-check outputs evaluated
-  without package builds. Module checks assert the native default package and
-  its installation. Nixpkgs and Cargo locks are unchanged, as is the existing
-  x86 package derivation.
-- The pinned fast gate passed with the existing Cargo cache: 18 unit tests,
-  11 CLI/MCP/socket integration tests, Clippy, all format/lint checks and
-  all-system flake evaluation. The initial missing ARM package was reproduced
-  before the output change. ARM binary execution remains unrun.
-- The toolbox's documented `extraPackages` module evaluated with this AST
-  package and the public `project-check` pin
-  `f70de45d69b9ca9a31f5b9f94e316ac6e43e514e` on both systems, without builds or
-  host activation.
-- Tracked source privacy coverage completed with no credential findings. Two
-  address-pattern review findings are Tree-sitter captures in comments
-  (`src/lang.rs`, `src/model.rs`), not contact addresses; they remain visible in
-  the report. Synthetic home-directory examples now use a service-owned path.
-  Git history and untracked runtime state were excluded.
-
-## Development checkpoint — 2026-10-03 (portable orientation)
-
-Added a source-linked `.tabula/ENTRY.md` and freshness receipt; the workspace
-overview owns cross-repository relationships. The guide now loads detailed
-documents according to the task. Source review confirmed the language registry,
-resolution and transport boundaries. Tabula freshness and Markdown/TOON fixture
-parity passed. No Rust implementation changed, so its unchanged test suite was
-not rerun for this documentation change. Native context comparisons live in
-coding-agents-nix.
-
-## Development checkpoint — 2026-10-04 (Nix AST)
-
-Implemented pinned Nix grammar/tag queries, static binding/import extraction and
-conservative lexical call targets. Nested reference owners now use full
-qualified names, with a reproduced Rust regression and Nix ambiguity/shadowing
-coverage. The pinned fast gate passed: 23 unit tests, 14 integration tests,
-formatting, Clippy, Nix/Shell lint and both Linux output evaluations.
-All 66 existing workspace indexes were refreshed with `target/debug/ast-index`,
-with no file failures; the shared index reports 1,013 Nix files and 43,769 Nix
-symbols. Nix status/outline queries were verified through the live MCP service.
-The local refresh receipt is in the ignored `target/index-refresh-report.json`.
-The installed service still uses the previous package. Future index refreshes
-need the new binary; deploy the updated package through the consuming flake to
-retain Nix coverage across service restarts.

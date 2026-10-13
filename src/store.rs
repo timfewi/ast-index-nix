@@ -9,10 +9,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::model::{Confidence, LanguageCount, RefKind, Reference, Status, Symbol, SymbolKind};
+use crate::model::{Confidence, LanguageCount, RefKind, Status, Symbol, SymbolKind};
+
+mod history;
+mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +24,9 @@ pub struct FileState {
     pub mtime_ns: i64,
     pub hash: String,
     pub lang: String,
+    pub fingerprint: String,
+    pub parse_errors: bool,
+    pub project: String,
 }
 
 /// A stored reference row used by the resolver.
@@ -28,12 +34,14 @@ pub struct FileState {
 pub struct RefRow {
     pub id: i64,
     pub language: String,
+    pub project: String,
     pub file: String,
     pub directory: String,
     pub name: String,
     /// Full scoped path such as `Store::open`, when the language provides one.
     pub path: Option<String>,
     pub kind: RefKind,
+    pub blocked: Option<String>,
 }
 
 /// A symbol row used by the resolver.
@@ -41,10 +49,12 @@ pub struct RefRow {
 pub struct SymbolRow {
     pub id: i64,
     pub language: String,
+    pub project: String,
     pub file: String,
     pub directory: String,
     pub name: String,
-    /// Lowercased qualified name such as `store::open`.
+    pub exported: bool,
+    /// Case-sensitive qualified name such as `Store::open`.
     pub qualified: String,
 }
 
@@ -56,13 +66,7 @@ pub struct CallEdge {
     pub file: String,
     pub line: u32,
     pub confidence: Confidence,
-}
-
-/// Both edge directions for one symbol.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallersAndCallees {
-    pub callers: Vec<CallEdge>,
-    pub callees: Vec<CallEdge>,
+    pub reason: String,
 }
 
 /// A symbol reachable from `impact`.
@@ -74,7 +78,7 @@ pub struct ImpactRow {
 
 /// Handle to the index database.
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     path: PathBuf,
 }
 
@@ -82,22 +86,88 @@ impl Store {
     /// Open (and create) the index at `path`.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
-        }
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+        let path = parent
+            .canonicalize()
+            .map_err(|e| Error::io(&path, e))?
+            .join(
+                path.file_name()
+                    .ok_or_else(|| Error::Invalid("database path needs a filename".into()))?,
+            );
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let journal: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
+        let path = path.canonicalize().map_err(|e| Error::io(&path, e))?;
         let store = Self { conn, path };
-        store.init_schema()?;
-        store.set_meta("journal_mode", &journal)?;
+        let has_meta: bool = store.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+            [],
+            |r| r.get(0),
+        )?;
+        let version = if has_meta {
+            store.meta("schema_version")?
+        } else {
+            None
+        };
+        if version
+            .as_deref()
+            .and_then(|v| v.parse::<i64>().ok())
+            .is_some_and(|v| v > SCHEMA_VERSION)
+        {
+            return Err(Error::Invalid(
+                "database schema is newer than this executable".into(),
+            ));
+        }
+        if version.as_deref() != Some(&SCHEMA_VERSION.to_string()) {
+            let _guard = store.write_lock()?;
+            store.transaction(|| {
+                store.init_schema()?;
+                store.set_meta("journal_mode", &journal)
+            })?;
+        }
         Ok(store)
+    }
+
+    /// One writer per canonical database path. Readers do not hold this lock.
+    pub fn write_lock(&self) -> Result<nix::fcntl::Flock<std::fs::File>> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let lock = self.path.with_extension("writer.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&lock)
+            .map_err(|e| Error::io(&lock, e))?;
+        nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock).map_err(
+            |(_, e)| {
+                Error::Invalid(format!(
+                    "index writer busy ({e}); wait for the active indexing/import operation"
+                ))
+            },
+        )
     }
 
     /// Path of the database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Check again under writer ownership before constructing an update: an
+    /// engine may have opened an empty database before another root indexed it.
+    pub(crate) fn require_root(&self, root: &Path) -> Result<()> {
+        if self
+            .meta("root")?
+            .is_some_and(|stored| Path::new(&stored) != root)
+        {
+            return Err(Error::Invalid("database belongs to a different indexed root; select that root or a separate database".into()));
+        }
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -146,6 +216,59 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_refs_resolved ON refs(resolved_symbol_id);
             "#,
         )?;
+        for (table, column, definition) in [
+            ("files", "project", "TEXT NOT NULL DEFAULT ''"),
+            ("files", "fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("files", "parse_errors", "INTEGER NOT NULL DEFAULT 0"),
+            ("symbols", "start_column", "INTEGER NOT NULL DEFAULT 1"),
+            ("symbols", "end_column", "INTEGER NOT NULL DEFAULT 1"),
+            ("symbols", "signature", "TEXT NOT NULL DEFAULT ''"),
+            ("symbols", "exported", "INTEGER NOT NULL DEFAULT 0"),
+            ("symbols", "content_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("refs", "blocked", "TEXT"),
+            ("refs", "import_target", "TEXT"),
+            ("refs", "reason", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ] {
+            let mut statement = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let names: Vec<String> = statement
+                .query_map([], |r| r.get(1))?
+                .collect::<rusqlite::Result<_>>()?;
+            if !names.iter().any(|name| name == column) {
+                self.conn.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified_lower);
+            CREATE INDEX IF NOT EXISTS idx_symbols_prefix ON symbols(name_lower COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS idx_symbols_qualified_prefix ON symbols(qualified_lower COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS idx_symbols_exact_name ON symbols(name);
+            CREATE INDEX IF NOT EXISTS idx_symbols_exact_qualified ON symbols(qualified);",
+        )?;
+        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS snapshots(generation INTEGER PRIMARY KEY, complete INTEGER NOT NULL, note TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS snapshot_symbols(generation INTEGER NOT NULL, symbol_id INTEGER NOT NULL, identity TEXT NOT NULL, file TEXT NOT NULL,
+                name TEXT NOT NULL, kind TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, parent TEXT, qualified TEXT NOT NULL, start_column INTEGER NOT NULL, end_column INTEGER NOT NULL, content_hash TEXT NOT NULL,
+                PRIMARY KEY(generation,symbol_id));
+            CREATE INDEX IF NOT EXISTS idx_snapshot_identity ON snapshot_symbols(generation,identity);
+            CREATE TABLE IF NOT EXISTS snapshot_edges(generation INTEGER NOT NULL, caller INTEGER, callee INTEGER NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, reason TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_snapshot_callers ON snapshot_edges(generation,callee);")?;
+        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS semantic_documents(file TEXT PRIMARY KEY, hash TEXT NOT NULL, artifact TEXT NOT NULL, indexer TEXT NOT NULL, indexer_version TEXT NOT NULL, encoding INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS semantic_occurrences(id INTEGER PRIMARY KEY, file TEXT NOT NULL REFERENCES semantic_documents(file) ON DELETE CASCADE,
+                identity TEXT NOT NULL, symbol TEXT NOT NULL, display_name TEXT NOT NULL, role INTEGER NOT NULL, range TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_semantic_symbol ON semantic_occurrences(symbol);
+            CREATE TABLE IF NOT EXISTS semantic_implementations(id INTEGER PRIMARY KEY, file TEXT NOT NULL REFERENCES semantic_documents(file) ON DELETE CASCADE,
+                identity TEXT NOT NULL, symbol TEXT NOT NULL, target_identity TEXT NOT NULL, target_symbol TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_semantic_implementations ON semantic_implementations(target_symbol);")?;
+        for column in ["start_column", "end_column"] {
+            let mut statement = self.conn.prepare("PRAGMA table_info(snapshot_symbols)")?;
+            let names: Vec<String> = statement
+                .query_map([], |r| r.get(1))?
+                .collect::<rusqlite::Result<_>>()?;
+            if !names.iter().any(|n| n == column) {
+                self.conn.execute_batch(&format!("ALTER TABLE snapshot_symbols ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1; UPDATE snapshots SET complete=0,note='snapshot predates position tracking';"))?;
+            }
+        }
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
     }
@@ -171,6 +294,24 @@ impl Store {
         Ok(())
     }
 
+    pub fn generation(&self) -> Result<i64> {
+        Ok(self
+            .meta("generation")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0))
+    }
+
+    pub(crate) fn bump_generation(&self) -> Result<()> {
+        self.set_meta(
+            "generation",
+            &self
+                .generation()?
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("index generation exhausted".into()))?
+                .to_string(),
+        )
+    }
+
     /// Whether an index has been written for this database.
     pub fn is_indexed(&self) -> Result<bool> {
         Ok(self.meta("root")?.is_some())
@@ -184,12 +325,36 @@ impl Store {
         Ok(value)
     }
 
+    /// Read a consistent snapshot with a bounded SQLite VM instruction budget.
+    pub(crate) fn query_transaction<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let mut ticks = 20_000usize;
+        self.conn.progress_handler(
+            1000,
+            Some(move || {
+                ticks = ticks.saturating_sub(1);
+                ticks == 0
+            }),
+        )?;
+        let result = self.transaction(action);
+        self.conn.progress_handler(0, None::<fn() -> bool>)?;
+        match result {
+            Err(Error::Database(rusqlite::Error::SqliteFailure(e, _)))
+                if e.code == rusqlite::ErrorCode::OperationInterrupted =>
+            {
+                Err(Error::Invalid(
+                    "query computation budget exceeded; narrow the query or reduce depth".into(),
+                ))
+            }
+            other => other,
+        }
+    }
+
     /// Recorded hash state of a file, if present.
     pub fn file_state(&self, path: &str) -> Result<Option<FileState>> {
         let state = self
             .conn
             .query_row(
-                "SELECT size, mtime_ns, hash, lang FROM files WHERE path = ?1",
+                "SELECT size, mtime_ns, hash, lang, fingerprint, parse_errors, project FROM files WHERE path = ?1",
                 [path],
                 |row| {
                     Ok(FileState {
@@ -197,6 +362,9 @@ impl Store {
                         mtime_ns: row.get(1)?,
                         hash: row.get(2)?,
                         lang: row.get(3)?,
+                        fingerprint: row.get(4)?,
+                        parse_errors: row.get(5)?,
+                        project: row.get(6)?,
                     })
                 },
             )
@@ -206,9 +374,9 @@ impl Store {
 
     /// All indexed files as `(path, state)`.
     pub fn file_states(&self) -> Result<Vec<(String, FileState)>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT path, size, mtime_ns, hash, lang FROM files")?;
+        let mut statement = self.conn.prepare(
+            "SELECT path, size, mtime_ns, hash, lang, fingerprint, parse_errors, project FROM files",
+        )?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -217,6 +385,9 @@ impl Store {
                     mtime_ns: row.get(2)?,
                     hash: row.get(3)?,
                     lang: row.get(4)?,
+                    fingerprint: row.get(5)?,
+                    parse_errors: row.get(6)?,
+                    project: row.get(7)?,
                 },
             ))
         })?;
@@ -283,8 +454,8 @@ impl Store {
         let mut statement = self.conn.prepare(
             "INSERT INTO symbols(
                 file_id, name, name_lower, qualified, qualified_lower, kind,
-                start_line, end_line, parent
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                start_line, end_line, parent, start_column, end_column
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         let mut ids = Vec::with_capacity(symbols.len());
         for symbol in symbols {
@@ -298,6 +469,8 @@ impl Store {
                 symbol.start_line,
                 symbol.end_line,
                 symbol.parent,
+                symbol.start_column,
+                symbol.end_column,
             ])?;
             ids.push(self.conn.last_insert_rowid());
         }
@@ -309,8 +482,8 @@ impl Store {
         let mut statement = self.conn.prepare(
             "INSERT INTO refs(
                 file_id, name, name_lower, path, kind, line, from_symbol_id,
-                resolved_symbol_id, confidence
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+                resolved_symbol_id, confidence, blocked, reason
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, COALESCE(?9, 'unknown'))",
         )?;
         for reference in refs {
             statement.execute(params![
@@ -322,58 +495,10 @@ impl Store {
                 reference.line,
                 reference.from_symbol_id,
                 reference.confidence.as_str(),
+                reference.blocked,
             ])?;
         }
         Ok(())
-    }
-
-    /// Symbols of a file, ordered by position.
-    pub fn symbols_in_file(&self, path: &str) -> Result<Vec<Symbol>> {
-        let mut statement = self.conn.prepare(
-            "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.parent, s.qualified
-             FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE f.path = ?1
-             ORDER BY s.start_line, s.id",
-        )?;
-        let rows = statement.query_map([path], symbol_from_row)?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
-    }
-
-    /// Search definitions by name or qualified name.
-    pub fn find_symbols(&self, query: &str, limit: usize) -> Result<Vec<Symbol>> {
-        let lower = query.to_lowercase();
-        let prefix = format!("{lower}%");
-        let contains = format!("%{lower}%");
-        let mut statement = self.conn.prepare(
-            "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.parent, s.qualified
-             FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE s.name_lower = ?1 OR s.qualified_lower = ?1
-                OR s.name_lower LIKE ?2 OR s.qualified_lower LIKE ?3
-             ORDER BY
-                CASE
-                    WHEN s.name_lower = ?1 THEN 0
-                    WHEN s.qualified_lower = ?1 THEN 1
-                    WHEN s.name_lower LIKE ?2 THEN 2
-                    ELSE 3
-                END,
-                s.name,
-                f.path,
-                s.start_line
-             LIMIT ?4",
-        )?;
-        let rows = statement.query_map(
-            params![lower, prefix, contains, limit as i64],
-            symbol_from_row,
-        )?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
     }
 
     /// Load one symbol by id.
@@ -381,7 +506,7 @@ impl Store {
         let symbol = self
             .conn
             .query_row(
-                "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.parent, s.qualified
+                "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.parent, s.qualified, s.start_column, s.end_column
                  FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
                 [id],
                 symbol_from_row,
@@ -390,99 +515,59 @@ impl Store {
         Ok(symbol)
     }
 
-    /// Incoming call edges for a symbol.
-    pub fn callers(&self, symbol_id: i64) -> Result<Vec<CallEdge>> {
-        let target = match self.symbol_by_id(symbol_id)? {
-            Some(symbol) => symbol,
-            None => return Ok(Vec::new()),
-        };
-        let mut statement = self.conn.prepare(
-            "SELECT caller.qualified, f.path, r.line, r.confidence
-             FROM refs r
-             JOIN files f ON f.id = r.file_id
-             LEFT JOIN symbols caller ON caller.id = r.from_symbol_id
-             WHERE r.resolved_symbol_id = ?1 AND r.kind = 'call'
-             ORDER BY f.path, r.line",
-        )?;
-        let rows = statement.query_map([symbol_id], |row| {
-            Ok(CallEdge {
-                caller: row.get::<_, Option<String>>(0)?,
-                callee: target.qualified.clone(),
-                file: row.get(1)?,
-                line: row.get::<_, i64>(2)? as u32,
-                confidence: parse_confidence(row.get::<_, String>(3)?),
-            })
-        })?;
-        collect(rows)
-    }
-
-    /// Outgoing call edges from a symbol.
-    pub fn callees(&self, symbol_id: i64) -> Result<Vec<CallEdge>> {
-        let source = match self.symbol_by_id(symbol_id)? {
-            Some(symbol) => symbol,
-            None => return Ok(Vec::new()),
-        };
-        let mut statement = self.conn.prepare(
-            "SELECT callee.qualified, f.path, r.line, r.confidence
-             FROM refs r
-             JOIN files f ON f.id = r.file_id
-             JOIN symbols callee ON callee.id = r.resolved_symbol_id
-             WHERE r.from_symbol_id = ?1 AND r.kind = 'call'
-             ORDER BY f.path, r.line",
-        )?;
-        let rows = statement.query_map([symbol_id], |row| {
-            Ok(CallEdge {
-                caller: Some(source.qualified.clone()),
-                callee: row.get(0)?,
-                file: row.get(1)?,
-                line: row.get::<_, i64>(2)? as u32,
-                confidence: parse_confidence(row.get::<_, String>(3)?),
-            })
-        })?;
-        collect(rows)
-    }
-
     /// Transitive callers of a symbol up to `depth` hops.
-    pub fn impact(&self, symbol_id: i64, depth: u32) -> Result<Vec<ImpactRow>> {
+    pub(crate) fn impact_ids(&self, symbol_id: i64, depth: u32) -> Result<Vec<(i64, u32)>> {
+        use std::collections::{HashSet, VecDeque};
+        let mut seen = HashSet::from([symbol_id]);
+        let mut queue = VecDeque::from([(symbol_id, 0)]);
+        let mut result = Vec::new();
+        let mut remaining = 20_000usize;
         let mut statement = self.conn.prepare(
-            "WITH RECURSIVE callers(id, depth) AS (
-                SELECT ?1, 0
-                UNION
-                SELECT r.from_symbol_id, callers.depth + 1
-                FROM refs r JOIN callers ON r.resolved_symbol_id = callers.id
-                WHERE r.from_symbol_id IS NOT NULL AND callers.depth < ?2
-             )
-             SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.parent,
-                    s.qualified, callers.depth
-             FROM callers
-             JOIN symbols s ON s.id = callers.id
-             JOIN files f ON f.id = s.file_id
-             WHERE callers.depth > 0
-             ORDER BY callers.depth, f.path, s.start_line",
+            "SELECT DISTINCT from_symbol_id FROM refs
+            WHERE resolved_symbol_id = ?1 AND kind = 'call' AND from_symbol_id IS NOT NULL
+            ORDER BY from_symbol_id LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![symbol_id, depth as i64], |row| {
-            Ok(ImpactRow {
-                symbol: symbol_from_row(row)?,
-                depth: row.get::<_, i64>(8)? as u32,
-            })
-        })?;
-        collect(rows)
+        while let Some((id, distance)) = queue.pop_front() {
+            if distance >= depth.min(10) {
+                continue;
+            }
+            let callers: Vec<i64> = statement
+                .query_map(params![id, (remaining + 1) as i64], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            if callers.len() > remaining {
+                return Err(Error::Invalid(
+                    "impact traversal budget exceeded; reduce depth or choose a narrower seed"
+                        .into(),
+                ));
+            }
+            remaining -= callers.len();
+            for caller in callers {
+                if seen.insert(caller) {
+                    result.push((caller, distance + 1));
+                    queue.push_back((caller, distance + 1));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Candidate symbols for reference resolution.
     pub fn resolution_symbols(&self) -> Result<Vec<SymbolRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT s.id, f.path, s.name, s.qualified, f.lang FROM symbols s JOIN files f ON f.id = s.file_id",
+            "SELECT s.id, f.path, s.name, s.qualified, f.lang, f.project, s.exported FROM symbols s JOIN files f ON f.id = s.file_id",
         )?;
         let rows = statement.query_map([], |row| {
             let file: String = row.get(1)?;
             Ok(SymbolRow {
                 id: row.get(0)?,
                 language: row.get(4)?,
+                exported: row.get(6)?,
+                project: row.get(5)?,
                 directory: directory_of(&file),
                 file,
-                name: row.get::<_, String>(2)?.to_lowercase(),
-                qualified: row.get::<_, String>(3)?.to_lowercase(),
+                name: row.get(2)?,
+                qualified: row.get(3)?,
             })
         })?;
         collect(rows)
@@ -491,22 +576,22 @@ impl Store {
     /// Call and import references that still need resolution.
     pub fn resolution_refs(&self) -> Result<Vec<RefRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT r.id, f.path, r.name, r.kind, r.path, f.lang
+            "SELECT r.id, f.path, r.name, r.kind, r.path, f.lang, f.project, r.blocked
              FROM refs r JOIN files f ON f.id = r.file_id
-             WHERE r.kind = 'call' AND r.resolved_symbol_id IS NULL",
+             WHERE r.kind = 'call'",
         )?;
         let rows = statement.query_map([], |row| {
             let file: String = row.get(1)?;
             Ok(RefRow {
                 id: row.get(0)?,
                 language: row.get(5)?,
+                project: row.get(6)?,
+                blocked: row.get(7)?,
                 directory: directory_of(&file),
                 file,
-                name: row.get::<_, String>(2)?.to_lowercase(),
+                name: row.get(2)?,
                 kind: RefKind::from_stored(&row.get::<_, String>(3)?).unwrap_or(RefKind::Call),
-                path: row
-                    .get::<_, Option<String>>(4)?
-                    .map(|value| value.to_lowercase()),
+                path: row.get(4)?,
             })
         })?;
         collect(rows)
@@ -518,10 +603,11 @@ impl Store {
         ref_id: i64,
         symbol_id: Option<i64>,
         confidence: Confidence,
+        reason: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE refs SET resolved_symbol_id = ?2, confidence = ?3 WHERE id = ?1",
-            params![ref_id, symbol_id, confidence.as_str()],
+            "UPDATE refs SET resolved_symbol_id = ?2, confidence = ?3, reason = ?4 WHERE id = ?1",
+            params![ref_id, symbol_id, confidence.as_str(), reason],
         )?;
         Ok(())
     }
@@ -560,6 +646,47 @@ impl Store {
                 symbols: row.get(2)?,
             })
         })?;
+        let health: Option<crate::index::IndexStats> = self
+            .meta("health")?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?;
+        let last_freshness_check: Option<crate::model::Freshness> = self
+            .meta("last_freshness_check")?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .flatten();
+        let parser_versions: std::collections::BTreeMap<String, String> = self
+            .meta("parser_versions")?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or_default();
+        let current_parser_versions = crate::lang::fingerprints();
+        let resolution_version = self.meta("resolution_version")?;
+        let current_resolution_version = crate::resolve::fingerprint();
+        let reasons = self
+            .conn
+            .prepare("SELECT reason,COUNT(*) FROM refs GROUP BY reason ORDER BY reason")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let freshness = if !indexed {
+            "not_indexed"
+        } else if health
+            .as_ref()
+            .is_some_and(|h| !h.scan_complete || h.files_failed > 0 || h.parse_error_files > 0)
+            || last_freshness_check.as_ref().is_some_and(|f| !f.complete)
+        {
+            "incomplete"
+        } else if resolution_version.as_deref() != Some(&current_resolution_version)
+            || parser_versions != current_parser_versions
+            || last_freshness_check
+                .as_ref()
+                .is_some_and(|f| f.state == "stale")
+        {
+            "stale"
+        } else {
+            "unknown"
+        }
+        .to_string();
         Ok(Status {
             root: self.meta("root")?.unwrap_or_default(),
             indexed,
@@ -572,33 +699,16 @@ impl Store {
             imports,
             resolved_references,
             languages: collect(rows)?,
+            generation: self.generation()?,
+            freshness,
+            last_freshness_check,
+            health,
+            parser_versions,
+            current_parser_versions,
+            resolution_reasons: reasons,
+            resolution_version,
+            current_resolution_version,
         })
-    }
-
-    /// Stored references of a file, for debugging and JSON output.
-    pub fn references_in_file(&self, path: &str) -> Result<Vec<Reference>> {
-        let mut statement = self.conn.prepare(
-            "SELECT r.id, f.path, r.name, r.kind, r.line, s.name, r.resolved_symbol_id, r.confidence, r.path
-             FROM refs r
-             JOIN files f ON f.id = r.file_id
-             LEFT JOIN symbols s ON s.id = r.from_symbol_id
-             WHERE f.path = ?1
-             ORDER BY r.line, r.id",
-        )?;
-        let rows = statement.query_map([path], |row| {
-            Ok(Reference {
-                id: row.get(0)?,
-                file: row.get(1)?,
-                name: row.get(2)?,
-                kind: RefKind::from_stored(&row.get::<_, String>(3)?).unwrap_or(RefKind::Call),
-                line: row.get::<_, i64>(4)? as u32,
-                from_symbol: row.get(5)?,
-                resolved: row.get(6)?,
-                confidence: parse_confidence(row.get::<_, String>(7)?),
-                path: row.get(8)?,
-            })
-        })?;
-        collect(rows)
     }
 
     /// Dump the raw schema version (used by tests and `status --json`).
@@ -616,6 +726,8 @@ pub struct SymbolInsert {
     pub kind: SymbolKind,
     pub start_line: u32,
     pub end_line: u32,
+    pub start_column: u32,
+    pub end_column: u32,
     pub parent: Option<String>,
     pub qualified: String,
 }
@@ -629,6 +741,7 @@ pub struct RefInsert {
     pub line: u32,
     pub from_symbol_id: Option<i64>,
     pub confidence: Confidence,
+    pub blocked: Option<String>,
 }
 
 fn symbol_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
@@ -642,6 +755,8 @@ fn symbol_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Symbol> {
         end_line: row.get::<_, i64>(5)? as u32,
         parent: row.get(6)?,
         qualified: row.get(7)?,
+        start_column: row.get(8)?,
+        end_column: row.get(9)?,
     })
 }
 
@@ -659,7 +774,7 @@ fn collect<T>(
     Ok(result)
 }
 
-fn directory_of(path: &str) -> String {
+pub(crate) fn directory_of(path: &str) -> String {
     match path.rsplit_once('/') {
         Some((directory, _)) => directory.to_string(),
         None => String::new(),
@@ -672,4 +787,74 @@ pub fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_query_releases_snapshot_and_resets_the_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("index.sqlite")).unwrap();
+        let result: Result<i64> = store.query_transaction(|| {
+            Ok(store.conn.query_row(
+                "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n",
+                [], |r| r.get(0),
+            )?)
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("computation budget")
+        );
+        assert!(store.conn.is_autocommit());
+        assert_eq!(
+            store
+                .query_transaction(|| Ok(store
+                    .conn
+                    .query_row("SELECT 42", [], |r| r.get::<_, i64>(0))?))
+                .unwrap(),
+            42
+        );
+    }
+
+    #[test]
+    fn migration_preserves_legacy_rows_and_requires_new_extraction() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+            INSERT INTO meta VALUES('schema_version','1');
+            CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,lang TEXT NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,hash TEXT NOT NULL);
+            CREATE TABLE symbols(id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,name TEXT NOT NULL,name_lower TEXT NOT NULL,qualified TEXT NOT NULL,qualified_lower TEXT NOT NULL,kind TEXT NOT NULL,start_line INTEGER NOT NULL,end_line INTEGER NOT NULL,parent TEXT);
+            CREATE TABLE refs(id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,name TEXT NOT NULL,name_lower TEXT NOT NULL,path TEXT,kind TEXT NOT NULL,line INTEGER NOT NULL,from_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,resolved_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,confidence TEXT NOT NULL);
+            INSERT INTO files VALUES(1,'lib.rs','rust',14,0,'legacy-hash');
+            INSERT INTO symbols VALUES(1,1,'helper','helper','helper','helper','function',1,1,NULL);"
+        ).unwrap();
+        drop(connection);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.meta("schema_version").unwrap(),
+            Some(SCHEMA_VERSION.to_string())
+        );
+        let state = store.file_state("lib.rs").unwrap().unwrap();
+        assert_eq!(state.hash, "legacy-hash");
+        assert!(state.fingerprint.is_empty());
+        let query = crate::query::Query {
+            action: "outline".into(),
+            file: Some("lib.rs".into()),
+            ..Default::default()
+        };
+        let symbols = store
+            .select_symbols(&query, &query.window(0).unwrap(), false)
+            .unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "helper");
+        assert_eq!(symbols[0].start_column, 1);
+        drop(store);
+        assert!(Store::open(path).is_ok());
+    }
 }

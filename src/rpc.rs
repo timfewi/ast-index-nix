@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 
 use crate::engine::Engine;
 use crate::error::Error;
-use crate::model::Symbol;
 use crate::report;
 
 /// Server name reported to clients.
@@ -37,14 +36,8 @@ Edges are name-resolved and precision-first: ambiguous names are reported as unr
 dispatch, macros, reflection and generated code are not resolved. If no index exists the tool returns \
 setup guidance instead of an error. Treat every result as a hint and read the file before editing.";
 
-/// Parsed tool arguments.
-#[derive(Debug, Default)]
 struct ExploreArgs {
-    action: String,
-    query: Option<String>,
-    file: Option<String>,
-    depth: Option<u32>,
-    limit: Option<usize>,
+    query: crate::query::Query,
     format_json: bool,
 }
 
@@ -94,6 +87,9 @@ impl RpcServer {
     /// Dispatch one request to a response value.
     pub fn handle(&self, request: &Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        if !id.is_null() && !id.is_number() && !id.as_str().is_some_and(|s| s.len() <= 256) {
+            return error(Value::Null, -32600, "invalid or oversized request id");
+        }
         let method = match request.get("method").and_then(Value::as_str) {
             Some(method) => method,
             None => return error(id, -32600, "invalid request: missing method"),
@@ -159,6 +155,7 @@ impl RpcServer {
             // in a session teaches the agent that the tool is broken.
             Err(Error::NotIndexed(message)) => (message, false),
             Err(Error::Invalid(message)) => (message, true),
+            Err(error @ Error::Ambiguous(_)) => (error.payload().to_string(), true),
             Err(other) => (
                 format!(
                     "Tool execution failed: {other}. Retry the call once; if it persists, continue without ast-index."
@@ -179,88 +176,11 @@ impl RpcServer {
     }
 
     fn run(&self, args: &ExploreArgs) -> crate::error::Result<String> {
-        let limit = args.limit.unwrap_or(25).clamp(1, 100);
-        let pretty = |value: Value| {
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
-        };
-        match args.action.as_str() {
-            "status" => {
-                let status = self.engine.status()?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&status)?))
-                } else {
-                    Ok(report::status_text(&status))
-                }
-            }
-            "outline" => {
-                let file = required(&args.file, "file")?;
-                let symbols = self.engine.outline(file)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&symbols)?))
-                } else {
-                    Ok(report::symbols_text(&symbols))
-                }
-            }
-            "search" => {
-                let query = required(&args.query, "query")?;
-                let symbols = self.engine.search(query, limit)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&symbols)?))
-                } else {
-                    Ok(report::symbols_text(&symbols))
-                }
-            }
-            "describe" => {
-                let query = required(&args.query, "query")?;
-                let symbol = self.engine.symbol(query)?;
-                let (_, relations) = self.engine.relations(query)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&symbol)?))
-                } else {
-                    let mut output = format!(
-                        "{}  {}  {}:{}\n",
-                        symbol.qualified,
-                        symbol.kind.as_str(),
-                        symbol.file,
-                        symbol.start_line
-                    );
-                    output.push_str(&report::edges_text("callers", &relations.callers));
-                    output.push('\n');
-                    output.push_str(&report::edges_text("callees", &relations.callees));
-                    Ok(output)
-                }
-            }
-            "callers" => {
-                let query = required(&args.query, "query")?;
-                let (_, edges) = self.engine.callers(query)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&edges)?))
-                } else {
-                    Ok(report::edges_text("callers", &edges))
-                }
-            }
-            "callees" => {
-                let query = required(&args.query, "query")?;
-                let (_, edges) = self.engine.callees(query)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&edges)?))
-                } else {
-                    Ok(report::edges_text("callees", &edges))
-                }
-            }
-            "impact" => {
-                let query = required(&args.query, "query")?;
-                let depth = args.depth.unwrap_or(3).clamp(1, 10);
-                let (symbol, rows) = self.engine.impact(query, depth)?;
-                if args.format_json {
-                    Ok(pretty(serde_json::to_value(&rows)?))
-                } else {
-                    Ok(report::impact_text(&symbol, &rows))
-                }
-            }
-            other => Err(Error::Invalid(format!(
-                "unknown action `{other}`; expected one of status, outline, search, describe, callers, callees, impact"
-            ))),
+        let value = self.engine.execute(&args.query)?;
+        if args.format_json {
+            Ok(serde_json::to_string(&value)?)
+        } else {
+            Ok(report::query_text(&value))
         }
     }
 }
@@ -280,7 +200,7 @@ pub fn tool_definition() -> Value {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "outline", "search", "describe", "callers", "callees", "impact"],
+                    "enum": crate::query::ACTIONS,
                     "description": "Which query to run."
                 },
                 "query": {
@@ -289,7 +209,7 @@ pub fn tool_definition() -> Value {
                 },
                 "file": {
                     "type": "string",
-                    "description": "File path relative to the indexed root (for outline)."
+                    "description": "Relative file path; also disambiguates symbols for graph queries."
                 },
                 "depth": {
                     "type": "integer",
@@ -301,8 +221,22 @@ pub fn tool_definition() -> Value {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "description": "Maximum results for search (default 25)."
+                    "description": "Maximum results per page (default 25)."
                 },
+                "subtree": { "type": "string", "description": "Restrict results to a relative subtree." },
+                "language": { "type": "string" },
+                "kind": { "type": "string" },
+                "line": { "type": "integer", "minimum": 1 },
+                "column": { "type": "integer", "minimum": 1, "description":"One-based UTF-8 byte column; requires line." },
+                "cursor": { "type": "string", "description": "Opaque continuation returned by this query; invalid after reindexing." },
+                "match_mode": { "enum": ["exact", "prefix", "contains"], "description": "Literal name matching; no user wildcards." },
+                "reason": { "type": "string", "description": "Filter references by resolution reason." },
+                "budget": { "type": "integer", "minimum": 1024, "maximum": 32768, "description": "Repository map byte budget." },
+                "baseline": { "type": "integer", "minimum": 1, "description": "Retained structural snapshot generation." },
+                "changes": { "type": "array", "maxItems": 100, "items": { "type": "object", "properties": {
+                    "file": {"type":"string"}, "start_line":{"type":"integer","minimum":1}, "end_line":{"type":"integer","minimum":1}
+                }, "required":["file","start_line","end_line"], "additionalProperties":false } },
+                "relation": {"enum":["definition","reference","implementation"],"description":"SCIP semantic relation, default definition. Never treated as a call edge."},
                 "format": {
                     "type": "string",
                     "enum": ["text", "json"],
@@ -321,38 +255,23 @@ pub fn tool_definition() -> Value {
 }
 
 fn parse_args(arguments: &Value) -> std::result::Result<ExploreArgs, String> {
-    let action = arguments
-        .get("action")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "missing required argument `action`".to_string())?;
-    let format_json = arguments.get("format").and_then(Value::as_str) == Some("json");
-    Ok(ExploreArgs {
-        action: action.to_string(),
-        query: string_arg(arguments, "query"),
-        file: string_arg(arguments, "file"),
-        depth: arguments
-            .get("depth")
-            .and_then(Value::as_u64)
-            .map(|value| value as u32),
-        limit: arguments
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map(|value| value as usize),
-        format_json,
-    })
-}
-
-fn string_arg(arguments: &Value, key: &str) -> Option<String> {
-    arguments
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn required<'a>(value: &'a Option<String>, name: &str) -> std::result::Result<&'a str, Error> {
-    value
-        .as_deref()
-        .ok_or_else(|| Error::Invalid(format!("missing required argument `{name}`")))
+    let mut arguments = arguments.clone();
+    let object = arguments
+        .as_object_mut()
+        .ok_or("arguments must be an object")?;
+    let format_json = match object.remove("format") {
+        None => false,
+        Some(Value::String(s)) if s == "text" => false,
+        Some(Value::String(s)) if s == "json" => true,
+        _ => return Err("format must be text or json".into()),
+    };
+    if !object.contains_key("action") {
+        return Err("missing required argument `action`".into());
+    }
+    let query: crate::query::Query =
+        serde_json::from_value(arguments).map_err(|e| e.to_string())?;
+    query.validate().map_err(|e| e.to_string())?;
+    Ok(ExploreArgs { query, format_json })
 }
 
 fn result(id: Value, value: Value) -> Value {
@@ -363,21 +282,12 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": code, "message": message }
+        "error": error_value(code,message)
     })
 }
 
 fn error_value(code: i64, message: &str) -> Value {
-    json!({ "code": code, "message": message })
-}
-
-/// Render an ambiguous lookup for callers that only have symbols.
-pub fn describe_candidates(candidates: &[Symbol]) -> String {
-    candidates
-        .iter()
-        .map(|symbol| symbol.qualified.clone())
-        .collect::<Vec<_>>()
-        .join(", ")
+    json!({ "code": code, "message": message.chars().take(1024).collect::<String>() })
 }
 
 #[cfg(test)]
@@ -484,10 +394,8 @@ mod tests {
                 "arguments": { "action": "x".repeat(70_000) }
             }
         }));
-        let text = response["result"]["content"][0]["text"]
-            .as_str()
-            .expect("text");
-        assert!(text.len() <= 65_536, "tool text was {} bytes", text.len());
-        assert_eq!(response["result"]["isError"], json!(true));
+        let text = serde_json::to_string(&response).expect("response");
+        assert!(text.len() <= 65_536, "response was {} bytes", text.len());
+        assert_eq!(response["error"]["code"], json!(-32602));
     }
 }

@@ -1,5 +1,28 @@
 # Development
 
+## Implementation checkpoint
+
+The five-stage navigation expansion is implemented and verified. Changed layers:
+extraction/scopes; indexing/health/fingerprints; database locks, SQL queries and
+snapshots; shared CLI/MCP contracts; imports, repository maps, changed-impact and
+local SCIP ingestion. Source/state boundaries remain local.
+
+Final verification: `nix develop --command bash scripts/check fast` passed with
+29 unit and 35 integration tests, formatting, Clippy (`-D warnings`), deadnix,
+statix, Nix/Shell checks and both Linux output evaluations. Process tests exercise
+CLI, stdio MCP, separate socket readers, writer contention and proxy framing.
+Exact/prefix SQL plans use indexes; substring matching scans under a tested VM
+budget. Migration, stale semantic artifacts, special files, root ownership,
+cache invalidation and deleted-symbol callers have focused regressions.
+
+The final requirements audit and local documentation-link checks passed. Remaining
+coverage limits are recorded in [requirements.md](requirements.md#evidence-limits).
+Review regressions cover hoisted/reassigned bindings, exception aliases, named
+exports, member/module boundaries, callee filters and SCIP range-validation work.
+No implementation step remains pending. Nix package builds and VM tests were not
+run; no host activation occurred.
+The module evaluations retain the existing unset `system.stateVersion` warning.
+
 ## Environment
 
 The pinned Nix flake provides the toolchain. Cargo artifacts must stay inside the
@@ -21,26 +44,12 @@ bash scripts/check fast
 ```
 
 `scripts/check fast` is the documented gate: formatting, clippy with
-`-D warnings`, all unit and integration tests, `nixfmt --check` and
-`shellcheck`.
+`-D warnings`, all unit and integration tests, deadnix/statix, `nixfmt --check`,
+`shellcheck`, and both Linux output evaluations with `nix flake check --no-build`.
 
 ## Layout
 
-```
-src/lang.rs      language registry: extension -> grammar + tag query
-src/parse.rs     tag query execution, nesting, enclosing definition
-src/parse/nix.rs static Nix extraction and local lexical call targets
-src/index.rs     walk, hash, transaction
-src/resolve.rs   precision-first scope ladder
-src/store.rs     SQLite schema and queries
-src/engine.rs    shared query operations
-src/report.rs    capped text renderers
-src/rpc.rs       JSON-RPC / MCP dispatch
-src/serve.rs     stdio, socket service, proxy
-src/main.rs      CLI
-tests/           end-to-end tests through the real binary
-nix/module.nix   NixOS service module
-```
+See [.tabula/ENTRY.md](../.tabula/ENTRY.md) for current source ownership.
 
 ## Manual checks
 
@@ -52,7 +61,8 @@ cargo run -- describe ScopeMaps::build
 cargo run -- impact resolve_all --depth 3
 
 # Serve on a socket and talk to it through the proxy.
-cargo run -- serve --socket /tmp/ast-index.sock --index &
+cargo run -- serve --socket /tmp/ast-index.sock --index
+# In a second terminal:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | cargo run -- mcp --socket /tmp/ast-index.sock
 ```
@@ -68,7 +78,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
 
 ## Index state
 
-The index is `<root>/.ast-index/index.sqlite` plus its journal files. Deleting
-the directory is always safe; `ast-index index` rebuilds it. `--force` re-parses
-everything. A stale lock file is only a problem while a service holds it; the
-lock is released when the holder exits.
+The index is `<root>/.ast-index/index.sqlite` plus its journal files. `ast-index
+index` rebuilds AST data; `--force` re-parses everything. Recreating the database
+also discards retained snapshots and requires re-importing semantic artifacts.
+Database locks cover mutations and are released on exit. Listener locks are
+separate; query services do not monopolize the writer. Schema migration preserves
+derived rows and fingerprints invalidate stale extraction. Stored SCIP data and
+structural snapshots are also derived state.

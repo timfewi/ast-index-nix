@@ -7,17 +7,20 @@
 
 pub mod engine;
 pub mod error;
+pub mod imports;
 pub mod index;
 pub mod lang;
 pub mod model;
 pub mod parse;
+pub mod query;
 pub mod report;
 pub mod resolve;
 pub mod rpc;
+pub mod scip;
 pub mod serve;
 pub mod store;
 
-pub use engine::{Engine, SymbolLookup};
+pub use engine::Engine;
 pub use error::{Error, Result};
 pub use index::{IndexOptions, IndexStats};
 pub use rpc::RpcServer;

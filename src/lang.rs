@@ -73,6 +73,27 @@ impl LangSpec {
         }
     }
 
+    /// Covers grammar dependency pins, tag queries and extraction logic.
+    pub fn fingerprint(&self) -> String {
+        static FINGERPRINTS: std::sync::OnceLock<std::collections::HashMap<&'static str, String>> =
+            std::sync::OnceLock::new();
+        FINGERPRINTS.get_or_init(|| {
+            ALL.iter()
+                .map(|spec| {
+                    let mut hash = blake3::Hasher::new();
+                    hash.update(include_bytes!("../Cargo.lock"));
+                    hash.update(include_bytes!("parse.rs"));
+                    hash.update(include_bytes!("parse/scopes.rs"));
+                    hash.update(include_bytes!("parse/nix.rs"));
+                    hash.update(spec.id.as_bytes());
+                    hash.update(spec.tags().as_bytes());
+                    (spec.id, hash.finalize().to_hex().to_string())
+                })
+                .collect()
+        })[self.id]
+            .clone()
+    }
+
     /// Language id for a grammar-independent grouping (tsx -> typescript).
     pub fn family(&self) -> &'static str {
         if self.id == "tsx" {
@@ -116,8 +137,7 @@ const RUST_TAGS: &str = r#"
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call
 (call_expression function: (scoped_identifier name: (identifier) @name) @path) @reference.call
-(use_declaration argument: (identifier) @name) @reference.import
-(use_declaration argument: (scoped_identifier name: (identifier) @name)) @reference.import
+(use_declaration argument: (_) @name) @reference.import
 "#;
 
 const PYTHON_TAGS: &str = r#"
@@ -126,7 +146,8 @@ const PYTHON_TAGS: &str = r#"
 (call function: (identifier) @name) @reference.call
 (call function: (attribute attribute: (identifier) @name)) @reference.call
 (import_statement name: (dotted_name) @name) @reference.import
-(import_from_statement module_name: (dotted_name) @name) @reference.import
+(import_statement name: (aliased_import name: (dotted_name) @name)) @reference.import
+(import_from_statement module_name: (_) @name) @reference.import
 "#;
 
 const TYPESCRIPT_TAGS: &str = r#"
@@ -141,6 +162,7 @@ const TYPESCRIPT_TAGS: &str = r#"
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
 (import_statement source: (string) @name) @reference.import
+(call_expression function: (import) arguments: (arguments (_) @name)) @reference.import
 "#;
 
 const JAVASCRIPT_TAGS: &str = r#"
@@ -152,10 +174,11 @@ const JAVASCRIPT_TAGS: &str = r#"
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
 (import_statement source: (string) @name) @reference.import
+(call_expression function: (import) arguments: (arguments (_) @name)) @reference.import
 "#;
 
 // Nix bindings are classified from their value by the parser. Only statically
-// named bindings and literal imports are retained; no Nix code is evaluated.
+// named bindings are definitions; dynamic imports remain unresolved; no Nix code is evaluated.
 const NIX_TAGS: &str = r#"
 (binding attrpath: (attrpath) @name) @definition.const
 (inherited_attrs attr: [(identifier) (string_expression)] @name @definition.const)
@@ -164,20 +187,27 @@ const NIX_TAGS: &str = r#"
 (apply_expression function: (parenthesized_expression expression: [(variable_expression) (select_expression)] @name)) @reference.call
 ((apply_expression
   function: (variable_expression name: (identifier) @_import)
-  argument: [(path_expression) (spath_expression) (string_expression)] @name) @reference.import
+  argument: (_) @name) @reference.import
  (#eq? @_import "import"))
 ((apply_expression
   function: (select_expression
     expression: (variable_expression name: (identifier) @_builtins)
     attrpath: (attrpath . (identifier) @_import .))
-  argument: [(path_expression) (spath_expression) (string_expression)] @name) @reference.import
+  argument: (_) @name) @reference.import
  (#eq? @_builtins "builtins")
  (#eq? @_import "import"))
 ((binding
   attrpath: (attrpath . (identifier) @_imports .)
-  expression: (list_expression element: [(path_expression) (spath_expression) (string_expression)] @name)) @reference.import
+  expression: (list_expression element: (_) @name)) @reference.import
  (#eq? @_imports "imports"))
 "#;
+
+/// Current extraction identities, independent of any stored index snapshot.
+pub fn fingerprints() -> std::collections::BTreeMap<String, String> {
+    ALL.iter()
+        .map(|spec| (spec.id.to_string(), spec.fingerprint()))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
