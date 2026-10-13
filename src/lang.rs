@@ -16,6 +16,22 @@ pub struct LangSpec {
 /// All supported languages.
 pub const ALL: &[LangSpec] = &[
     LangSpec {
+        id: "bash",
+        extensions: &["sh", "bash"],
+    },
+    LangSpec {
+        id: "go",
+        extensions: &["go"],
+    },
+    LangSpec {
+        id: "lua",
+        extensions: &["lua"],
+    },
+    LangSpec {
+        id: "sql",
+        extensions: &["sql"],
+    },
+    LangSpec {
         id: "rust",
         extensions: &["rs"],
     },
@@ -45,6 +61,10 @@ impl LangSpec {
     /// Build the tree-sitter language handle.
     pub fn language(&self) -> Language {
         match self.id {
+            "bash" => tree_sitter_bash::LANGUAGE.into(),
+            "go" => tree_sitter_go::LANGUAGE.into(),
+            "lua" => tree_sitter_lua::LANGUAGE.into(),
+            "sql" => tree_sitter_sequel::LANGUAGE.into(),
             "rust" => tree_sitter_rust::LANGUAGE.into(),
             "python" => tree_sitter_python::LANGUAGE.into(),
             "typescript" | "tsx" => {
@@ -64,6 +84,10 @@ impl LangSpec {
     /// The tag query for this language.
     pub fn tags(&self) -> &'static str {
         match self.id {
+            "bash" => "(function_definition name: (word) @name) @definition.function",
+            "go" => tree_sitter_go::TAGS_QUERY,
+            "lua" => tree_sitter_lua::TAGS_QUERY,
+            "sql" => SQL_TAGS,
             "rust" => RUST_TAGS,
             "python" => PYTHON_TAGS,
             "typescript" | "tsx" => TYPESCRIPT_TAGS,
@@ -85,6 +109,10 @@ impl LangSpec {
                     hash.update(include_bytes!("parse.rs"));
                     hash.update(include_bytes!("parse/scopes.rs"));
                     hash.update(include_bytes!("parse/nix.rs"));
+                    hash.update(include_bytes!("parse/bash.rs"));
+                    hash.update(include_bytes!("parse/go.rs"));
+                    hash.update(include_bytes!("parse/lua.rs"));
+                    hash.update(include_bytes!("parse/sql.rs"));
                     hash.update(spec.id.as_bytes());
                     hash.update(spec.tags().as_bytes());
                     (spec.id, hash.finalize().to_hex().to_string())
@@ -111,6 +139,50 @@ pub fn detect(path: &Path) -> Option<LangSpec> {
         .copied()
         .find(|spec| spec.extensions.contains(&extension.as_str()))
 }
+
+/// Only extensionless files are probed; interpreter arguments are never run.
+pub fn detect_shebang(prefix: &[u8]) -> Option<LangSpec> {
+    let line = std::str::from_utf8(prefix.split(|b| *b == b'\n').next()?).ok()?;
+    let mut words = line.strip_prefix("#!")?.split_whitespace();
+    let interpreter = words.next()?.rsplit('/').next()?;
+    let shell = if interpreter == "env" {
+        loop {
+            let word = words.next()?;
+            match word {
+                "--" | "-S" | "--split-string" | "-i" | "--ignore-environment" => continue,
+                "-u" | "--unset" => {
+                    words.next()?;
+                    continue;
+                }
+                _ if word.starts_with("--split-string=") => {
+                    break word.strip_prefix("--split-string=")?;
+                }
+                _ if word.starts_with("--unset=") => continue,
+                _ if word.starts_with('-') => return None,
+                _ if word.split_once('=').is_some_and(|(key, _)| {
+                    !key.is_empty()
+                        && key.chars().enumerate().all(|(i, c)| {
+                            c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                        })
+                }) =>
+                {
+                    continue;
+                }
+                _ => break word.rsplit('/').next()?,
+            }
+        }
+    } else {
+        interpreter
+    };
+    matches!(shell, "bash" | "sh" | "dash").then(|| by_id("bash").expect("registered Bash"))
+}
+
+const SQL_TAGS: &str = r#"
+(create_table (object_reference name: (identifier) @name)) @definition.table
+(create_view (object_reference name: (identifier) @name)) @definition.view
+(create_materialized_view (object_reference name: (identifier) @name)) @definition.view
+(create_function (object_reference name: (identifier) @name)) @definition.function
+"#;
 
 /// Look up a language by id.
 pub fn by_id(id: &str) -> Option<LangSpec> {
@@ -219,5 +291,44 @@ mod tests {
             assert_eq!(detect(Path::new(path)), by_id("nix"));
         }
         assert_eq!(by_id("nix").expect("Nix language").family(), "nix");
+    }
+
+    #[test]
+    fn detects_new_extensions_and_literal_shell_shebangs() {
+        for (file, language) in [
+            ("task.BASH", "bash"),
+            ("task.sh", "bash"),
+            ("main.go", "go"),
+            ("init.lua", "lua"),
+            ("migration.SQL", "sql"),
+        ] {
+            assert_eq!(detect(Path::new(file)), by_id(language));
+        }
+        for header in [
+            "#!/bin/bash\n",
+            "#!/nix/store/example/bin/sh\n",
+            "#!/bin/dash\n",
+            "#!/usr/bin/env bash\n",
+            "#!/usr/bin/env -- bash\n",
+            "#!/usr/bin/env -S bash -eu\n",
+            "#!/usr/bin/env --split-string=bash -eu\n",
+            "#!/usr/bin/env -i LANG=C bash\n",
+            "#!/usr/bin/env -u BASH_ENV bash\n",
+        ] {
+            assert_eq!(detect_shebang(header.as_bytes()), by_id("bash"), "{header}");
+        }
+        for header in [
+            "#!/bin/zsh\n",
+            "#!/bin/fish\n",
+            "#!/usr/bin/env python3\n",
+            "#!/usr/bin/env --unknown=option bash\n",
+            "echo '#!/bin/bash'\n",
+            "#!/bin/bashful\n",
+        ] {
+            assert_eq!(detect_shebang(header.as_bytes()), None, "{header}");
+        }
+        for file in ["index.sqlite", "index.sqlite-wal", "page.astro"] {
+            assert_eq!(detect(Path::new(file)), None);
+        }
     }
 }

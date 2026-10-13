@@ -2,26 +2,31 @@
 
 ## Implementation checkpoint
 
-The five-stage navigation expansion is implemented and verified. Changed layers:
-extraction/scopes; indexing/health/fingerprints; database locks, SQL queries and
-snapshots; shared CLI/MCP contracts; imports, repository maps, changed-impact and
-local SCIP ingestion. Source/state boundaries remain local.
+Bash/Shell, Go, Lua and PostgreSQL-oriented SQL support is implemented through
+the existing CLI/MCP query engine. Language adapters live in
+`src/parse/{bash,go,lua,sql}.rs`; Go package resolution is in `src/resolve/go.rs`.
+Shared changes cover shebang detection, bounded and hashed `go.mod` metadata,
+imports, extraction/resolution fingerprints, schema version 6 and SQL
+`dependency` references separate from call edges. Astro and embedded shell/SQL
+remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-29 unit and 35 integration tests, formatting, Clippy (`-D warnings`), deadnix,
-statix, Nix/Shell checks and both Linux output evaluations. Process tests exercise
-CLI, stdio MCP, separate socket readers, writer contention and proxy framing.
-Exact/prefix SQL plans use indexes; substring matching scans under a tested VM
-budget. Migration, stale semantic artifacts, special files, root ownership,
-cache invalidation and deleted-symbol callers have focused regressions.
+66 unit and 47 integration tests, formatting, Clippy (`-D warnings`), deadnix,
+statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
+CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
+order/builtin shadowing, Lua mutation, SQL namespaces/CTEs/owners, shared read
+budgets and exclusion of internal/custom/renamed SQLite databases. All added tag
+queries compile against their pinned grammars and Tree-sitter 0.25.10.
 
-The final requirements audit and local documentation-link checks passed. Remaining
-coverage limits are recorded in [requirements.md](requirements.md#evidence-limits).
-Review regressions cover hoisted/reassigned bindings, exception aliases, named
-exports, member/module boundaries, callee filters and SCIP range-validation work.
-No implementation step remains pending. Nix package builds and VM tests were not
-run; no host activation occurred.
-The module evaluations retain the existing unset `system.stateVersion` warning.
+Pre-publication review reproduced and fixed generic Go receiver parameters
+falling back to package functions, wrapped Lua table/loader aliases retaining
+static targets, and status counts omitting resolved SQL dependencies. Each
+regression failed before its fix and passed in the final fast gate.
+
+Requirements and remaining static-analysis limits are recorded in
+[requirements.md](requirements.md). Local documentation links and final diffs
+were checked. No Nix package builds, VM tests or host activation were performed.
+Module evaluations retain the existing unset `system.stateVersion` warning.
 
 ## Environment
 

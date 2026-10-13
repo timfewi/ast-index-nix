@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
@@ -108,7 +108,10 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
 
     stats.resolution_recomputed =
         store.meta("resolution_version")?.as_deref() != Some(&resolve::fingerprint());
-    let candidates = collect_candidates(&root, options, &mut stats)?;
+    let (candidates, mut metadata_bytes) =
+        collect_candidates(&root, store.path(), options, &mut stats)?;
+    let go_modules = go_modules(&root, &candidates, options, &mut stats, &mut metadata_bytes)?;
+    stats.resolution_recomputed |= store.meta("go_modules")?.as_deref() != Some(&go_modules);
     let existing: HashMap<String, _> = store.file_states()?.into_iter().collect();
 
     let mut present: HashSet<String> = HashSet::with_capacity(candidates.len());
@@ -120,6 +123,7 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
     store.transaction(|| {
         store.set_meta("root", &root_text)?;
         store.set_meta("schema_version", &crate::store::SCHEMA_VERSION.to_string())?;
+        store.set_meta("go_modules", &go_modules)?;
 
         for path in existing.keys() {
             if stats.scan_complete && !present.contains(path) {
@@ -128,15 +132,12 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
             }
         }
 
-        let mut bytes_read = 0u64;
+        let mut bytes_read = metadata_bytes;
         for candidate in &candidates {
             let previous = existing.get(&candidate.relative);
-            let bytes = match read_source(
-                &root,
-                &candidate.absolute,
-                options
-                    .max_file_bytes
-                    .min(options.max_total_bytes.saturating_sub(bytes_read)),
+            let bytes = match read_budgeted(
+                &root, &candidate.absolute, options.max_file_bytes,
+                options.max_total_bytes, &mut bytes_read,
             ) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -150,7 +151,6 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
                     continue;
                 }
             };
-            bytes_read += bytes.len() as u64;
             // Hash the raw bytes; only the parser sees a lossy UTF-8 view, so a
             // stray non-UTF-8 byte in a comment does not drop the whole file.
             let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -227,9 +227,10 @@ fn record_failure(stats: &mut IndexStats, options: &IndexOptions, message: Strin
 
 fn collect_candidates(
     root: &Path,
+    database: &Path,
     options: &IndexOptions,
     stats: &mut IndexStats,
-) -> Result<Vec<Candidate>> {
+) -> Result<(Vec<Candidate>, u64)> {
     // Exclusions are gitignore-style ignore patterns; everything else is walked.
     let mut overrides = OverrideBuilder::new(root);
     for pattern in &options.exclude {
@@ -253,8 +254,18 @@ fn collect_candidates(
         .filter_entry(|entry| entry.file_name() != ".ast-index")
         .build();
 
+    let mut internal_paths = HashSet::from([
+        database.to_path_buf(),
+        database.with_extension("writer.lock"),
+    ]);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        internal_paths.insert(PathBuf::from(sidecar));
+    }
     let mut candidates = Vec::new();
     let mut total_bytes = 0u64;
+    let mut probe_bytes = 0u64;
     for (walked, entry) in walker.enumerate() {
         if walked >= options.max_files.saturating_mul(4) {
             stats.scan_complete = false;
@@ -281,9 +292,13 @@ fn collect_candidates(
             continue;
         }
         let path = entry.path();
-        let Some(spec) = lang::detect(path) else {
+        if internal_paths.contains(path) {
             continue;
-        };
+        }
+        let extension_spec = lang::detect(path);
+        if extension_spec.is_none() && path.extension().is_some() {
+            continue;
+        }
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => {
@@ -298,6 +313,40 @@ fn collect_candidates(
             }
         };
         let size = metadata.len();
+        let prefix = if extension_spec.is_none() || extension_spec.is_some_and(|s| s.id == "sql") {
+            use std::io::Read;
+            let remaining = options.max_total_bytes.saturating_sub(probe_bytes);
+            if remaining == 0 {
+                stats.scan_complete = false;
+                record_failure(stats, options, "source header probe budget exceeded".into());
+                break;
+            }
+            let mut prefix = Vec::new();
+            let reservation = 512.min(remaining);
+            probe_bytes += reservation;
+            match open_source(root, path).and_then(|file| {
+                file.take(reservation)
+                    .read_to_end(&mut prefix)
+                    .map_err(|e| Error::io(path, e))
+            }) {
+                Ok(_) => probe_bytes -= reservation - prefix.len() as u64,
+                Err(_) => {
+                    stats.files_failed += 1;
+                    stats.scan_complete = false;
+                    record_failure(stats, options, "source header probe failed".into());
+                    continue;
+                }
+            }
+            prefix
+        } else {
+            Vec::new()
+        };
+        if prefix.starts_with(b"SQLite format 3\0") {
+            continue;
+        }
+        let Some(spec) = extension_spec.or_else(|| lang::detect_shebang(&prefix)) else {
+            continue;
+        };
         if size > options.max_file_bytes {
             stats.files_skipped += 1;
             stats.scan_complete = false;
@@ -312,7 +361,9 @@ fn collect_candidates(
             continue;
         }
         total_bytes = total_bytes.saturating_add(size);
-        if candidates.len() >= options.max_files || total_bytes > options.max_total_bytes {
+        if candidates.len() >= options.max_files
+            || total_bytes.saturating_add(probe_bytes) > options.max_total_bytes
+        {
             stats.scan_complete = false;
             record_failure(
                 stats,
@@ -341,7 +392,7 @@ fn collect_candidates(
             mtime_ns,
         });
     }
-    Ok(candidates)
+    Ok((candidates, probe_bytes))
 }
 
 fn index_one(
@@ -400,12 +451,15 @@ fn index_one(
         )?;
     }
 
-    let mut by_qualified: HashMap<&str, Vec<i64>> = HashMap::new();
+    let mut by_qualified: HashMap<&str, Vec<(usize, usize, i64)>> = HashMap::new();
     for (symbol, id) in parsed.symbols.iter().zip(ids.iter()) {
         by_qualified
             .entry(symbol.qualified.as_str())
             .or_default()
-            .push(*id);
+            .push((symbol.start_byte, symbol.end_byte, *id));
+    }
+    for entries in by_qualified.values_mut() {
+        entries.sort_unstable();
     }
 
     let refs: Vec<RefInsert> = parsed
@@ -420,9 +474,13 @@ fn index_one(
                 .from_symbol
                 .as_deref()
                 .and_then(|name| by_qualified.get(name))
-                .and_then(|ids| match ids.as_slice() {
-                    [only] => Some(*only),
-                    _ => None,
+                .and_then(|entries| {
+                    let index = entries
+                        .partition_point(|(start, _, _)| *start <= reference.byte)
+                        .checked_sub(1)?;
+                    let (start, end, id) = entries[index];
+                    (reference.byte < end && (index == 0 || entries[index - 1].0 != start))
+                        .then_some(id)
                 }),
             confidence: Confidence::None,
             blocked: reference.blocked.clone(),
@@ -443,6 +501,7 @@ fn project_boundary(root: &Path, file: &Path) -> String {
             "package.json",
             "pyproject.toml",
             "setup.py",
+            "go.mod",
             ".git",
         ]
         .iter()
@@ -458,9 +517,82 @@ fn project_boundary(root: &Path, file: &Path) -> String {
     String::new()
 }
 
+/// Only bounded module declarations are read, never Go commands or dependencies.
+fn go_modules(
+    root: &Path,
+    candidates: &[Candidate],
+    options: &IndexOptions,
+    stats: &mut IndexStats,
+    bytes_read: &mut u64,
+) -> Result<String> {
+    let projects: std::collections::BTreeSet<_> = candidates
+        .iter()
+        .filter(|c| c.lang.id == "go")
+        .map(|c| project_boundary(root, &c.absolute))
+        .collect();
+    let mut modules = std::collections::BTreeMap::new();
+    for project in projects {
+        let path = root.join(&project).join("go.mod");
+        if !path.exists() {
+            continue;
+        }
+        let bytes = match read_budgeted(root, &path, 64_000, options.max_total_bytes, bytes_read) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                stats.files_failed += 1;
+                stats.scan_complete = false;
+                record_failure(
+                    stats,
+                    options,
+                    "Go module metadata could not be read within budget".into(),
+                );
+                continue;
+            }
+        };
+        let module = crate::parse::go::module_path(std::str::from_utf8(&bytes).unwrap_or_default());
+        modules.insert(project, (module, blake3::hash(&bytes).to_hex().to_string()));
+    }
+    Ok(serde_json::to_string(&modules)?)
+}
+
+/// Reserve the read plus its overflow sentinel before opening the file. Failed
+/// reads retain the reservation, so repeated failures cannot reset the budget.
+fn read_budgeted(
+    root: &Path,
+    path: &Path,
+    file_limit: u64,
+    total_limit: u64,
+    used: &mut u64,
+) -> Result<Vec<u8>> {
+    let reservation = total_limit
+        .saturating_sub(*used)
+        .min(file_limit.saturating_add(1));
+    if reservation == 0 {
+        return Err(Error::Invalid("source read budget exceeded".into()));
+    }
+    *used += reservation;
+    let result = read_source(root, path, reservation - 1);
+    if let Ok(bytes) = &result {
+        *used -= reservation - bytes.len() as u64;
+    }
+    result
+}
+
 /// Bounded, non-symlink file read. Source content cannot grant additional paths.
 pub(crate) fn read_source(root: &Path, path: &Path, limit: u64) -> Result<Vec<u8>> {
     use std::io::Read;
+    let file = open_source(root, path)?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::io(path, e))?;
+    if bytes.len() as u64 > limit {
+        return Err(Error::Invalid("source read budget exceeded".into()));
+    }
+    Ok(bytes)
+}
+
+fn open_source(root: &Path, path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let canonical = path.canonicalize().map_err(|e| Error::io(path, e))?;
     if !canonical.starts_with(root) {
@@ -474,14 +606,7 @@ pub(crate) fn read_source(root: &Path, path: &Path, limit: u64) -> Result<Vec<u8
     if !file.metadata().map_err(|e| Error::io(path, e))?.is_file() {
         return Err(Error::Invalid("source is not a regular file".into()));
     }
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|e| Error::io(path, e))?;
-    if bytes.len() as u64 > limit {
-        return Err(Error::Invalid("source read budget exceeded".into()));
-    }
-    Ok(bytes)
+    Ok(file)
 }
 
 /// Check current bytes without changing indexed content or trusting timestamps.
@@ -510,28 +635,33 @@ pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> 
         parse_error_files: 0,
         resolution_recomputed: false,
     };
-    let candidates = collect_candidates(&root, &options, &mut stats)?;
+    let (candidates, mut metadata_bytes) =
+        collect_candidates(&root, store.path(), &options, &mut stats)?;
+    let current_go_modules = go_modules(
+        &root,
+        &candidates,
+        &options,
+        &mut stats,
+        &mut metadata_bytes,
+    )?;
     let existing: HashMap<_, _> = store.file_states()?.into_iter().collect();
     let present: HashSet<_> = candidates.iter().map(|c| c.relative.as_str()).collect();
     let mut changed = 0usize;
     let mut examples = Vec::new();
-    let mut bytes_read = 0u64;
+    let mut bytes_read = metadata_bytes;
     for candidate in &candidates {
-        let matches = match read_source(
+        let matches = match read_budgeted(
             &root,
             &candidate.absolute,
-            options
-                .max_file_bytes
-                .min(options.max_total_bytes.saturating_sub(bytes_read)),
+            options.max_file_bytes,
+            options.max_total_bytes,
+            &mut bytes_read,
         ) {
-            Ok(bytes) => {
-                bytes_read += bytes.len() as u64;
-                existing.get(&candidate.relative).is_some_and(|state| {
-                    state.hash == blake3::hash(&bytes).to_hex().as_str()
-                        && state.fingerprint == candidate.lang.fingerprint()
-                        && state.project == project_boundary(&root, &candidate.absolute)
-                })
-            }
+            Ok(bytes) => existing.get(&candidate.relative).is_some_and(|state| {
+                state.hash == blake3::hash(&bytes).to_hex().as_str()
+                    && state.fingerprint == candidate.lang.fingerprint()
+                    && state.project == project_boundary(&root, &candidate.absolute)
+            }),
             Err(_) => {
                 stats.scan_complete = false;
                 false
@@ -560,8 +690,9 @@ pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> 
         .as_ref()
         .is_some_and(|h| h.scan_complete && h.files_failed == 0 && h.parse_error_files == 0);
     examples.sort();
-    let version_changed =
-        store.meta("resolution_version")?.as_deref() != Some(&resolve::fingerprint());
+    let version_changed = store.meta("resolution_version")?.as_deref()
+        != Some(&resolve::fingerprint())
+        || store.meta("go_modules")?.as_deref() != Some(&current_go_modules);
     let result = crate::model::Freshness {
         state: if changed > 0 || version_changed {
             "stale"
@@ -579,4 +710,24 @@ pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> 
     };
     store.set_meta("last_freshness_check", &serde_json::to_string(&result)?)?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_reads_consume_the_shared_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("large");
+        std::fs::write(&path, vec![b'x'; 100]).unwrap();
+        let mut used = 0;
+        assert!(read_budgeted(&root, &path, 30, 40, &mut used).is_err());
+        assert_eq!(used, 31);
+        assert!(read_budgeted(&root, &path, 30, 40, &mut used).is_err());
+        assert_eq!(used, 40);
+        assert!(read_budgeted(&root, &path, 30, 40, &mut used).is_err());
+        assert_eq!(used, 40);
+    }
 }

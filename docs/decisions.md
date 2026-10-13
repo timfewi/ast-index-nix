@@ -87,10 +87,11 @@ aliases, attribute selections and cross-file targets remain unresolved. Nix
 definitions never become targets of other languages' calls. D05 now applies
 precision-first resolution to all supported languages.
 
-Full qualified chains also identify reference owners, so nested same-named
-functions do not share a caller ID. Duplicate qualified owner names remain
-unattached. This reuses the existing schema and symbol kinds, with no new tool,
-execution authority or database migration.
+Full qualified chains and containing source byte ranges identify reference
+owners, so nested or disjoint same-named definitions do not share a caller ID.
+Unclear containing positions remain unattached; duplicate call-target identities
+remain unresolved. Nix support reuses the existing schema and symbol kinds,
+with no new tool, execution authority or database migration.
 
 ## D10 — Shared bounded query contracts
 
@@ -150,3 +151,38 @@ artifact. Semantic references are not calls; implementation results require the
 SCIP flag. Unsupported schema fields are ignored and documented, while unknown
 protocol versions and invalid paths/ranges are rejected. Producer arguments are
 not decoded or persisted.
+
+## D14 — Language-specific static evidence through one interface
+
+Bash, Go, Lua and PostgreSQL SQL extend the existing pipeline and `code_explore`
+contract. Custom bounded extractors supplement compiled tag queries where command
+execution order, mutable Lua bindings, Go package scope or SQL namespaces need
+more than name captures. No project interpreter, compiler, database server or build tool runs.
+Astro, embedded shell/SQL fragments and Zsh-specific syntax remain out of scope.
+
+PostgreSQL is the first SQL dialect: a bounded local source inventory found
+PostgreSQL markers in 36 of 59 SQL files and SQLite markers in one. This is a
+selection signal, not a dialect classifier or an accuracy measurement. The SQL
+extractor models tables, views and functions with quoted-name and CTE rules;
+relation references use a new `dependency` kind. Schema version 6 keeps these
+relationships separate from calls and file imports. No runtime search path,
+migration ordering or procedural body is inferred. `.sql` support never parses SQLite database contents as source: discovery
+rejects SQLite headers even under
+`.sql` names and excludes the active index database, its sidecars and `.ast-index`
+independently of gitignore.
+
+Bash source paths stay visible but unresolved because a script's directory does
+not prove its working directory. Lua literal requires use the explicit
+project-root module layout and remain blocked after detected loader mutations.
+Go reads only bounded `go.mod` metadata and indexed package files; hashes make
+module changes invalidate resolution and freshness. Unknown receivers, build
+selection, workspace/replacement rules and external dependencies are not guessed.
+
+The added grammar pins are [tree-sitter-bash 0.25.1](https://docs.rs/tree-sitter-bash/0.25.1/),
+[tree-sitter-go 0.25.0](https://docs.rs/tree-sitter-go/0.25.0/),
+[tree-sitter-lua 0.5.0](https://docs.rs/tree-sitter-lua/0.5.0/) and
+[tree-sitter-sequel 0.3.11](https://docs.rs/tree-sitter-sequel/0.3.11/).
+The existing Tree-sitter 0.25 runtime is retained; grammar loading and query
+compilation are covered by the parser tests. Sequel requires `cc ~1.2.1`, so the
+lockfile selects `cc 1.2.67` instead of the prior `1.4.7`; this compatibility
+constraint is the reason for the older transitive build dependency.

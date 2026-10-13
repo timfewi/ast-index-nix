@@ -1664,3 +1664,624 @@ fn member_namespaces_and_rust_modules_do_not_leak_bare_bindings() {
         "Container::helper"
     );
 }
+
+#[test]
+fn shell_shebangs_and_incremental_detection_are_bounded_and_static() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for (name, header) in [
+        ("direct", "#!/bin/bash"),
+        ("env", "#!/usr/bin/env bash"),
+        ("split", "#!/usr/bin/env -S bash -eu"),
+        ("posix", "#!/bin/sh"),
+    ] {
+        std::fs::write(
+            root.join(name),
+            format!("{header}\nhelper() {{ echo ok; }}\nrun() {{ helper; }}\nrun\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("unsupported"),
+        "#!/bin/zsh\nignored() { echo no; }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("source.sh"),
+        "source ./lib.sh\nsource \"$DYNAMIC\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("lib.sh"), "loaded() { :; }\n").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let callers = run_cli_json(root, &["callers", "helper", "--file", "split", "--json"]);
+    assert_eq!(callers[0]["caller"], "run");
+    let imports = run_cli_json(root, &["imports", "source.sh", "--json"]);
+    assert_eq!(imports[0]["name"], "./lib.sh");
+    assert!(imports[0]["target"].is_null());
+    assert_eq!(imports[0]["reason"], "runtime_working_directory");
+    let symbols = run_cli_json(root, &["search", "ignored", "--json"]);
+    assert!(symbols.as_array().unwrap().is_empty());
+    assert_eq!(run_cli_json(root, &["index", "--json"])["files_indexed"], 0);
+    std::fs::write(
+        root.join("direct"),
+        "#!/usr/bin/python3\ndef ignored(): pass\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run_cli_json(root, &["freshness", "--json"])["state"],
+        "stale"
+    );
+    assert_eq!(run_cli_json(root, &["index", "--json"])["files_removed"], 1);
+}
+
+#[test]
+fn go_packages_imports_module_changes_and_shadowing_share_cli_mcp_contracts() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("lib")).unwrap();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join("go.mod"), "module example.test/app\n\ngo 1.24\n").unwrap();
+    std::fs::write(root.join("a.go"), "package app\nfunc local() {}\n").unwrap();
+    std::fs::write(root.join("b.go"), "package app\nimport \"example.test/app/lib\"\nfunc Run() { local(); tools.Help() }\nfunc Shadow(local func()) { local() }\n").unwrap();
+    std::fs::write(root.join("lib/lib.go"), "package tools\nfunc Help() {}\n").unwrap();
+    std::fs::write(root.join("nested/go.mod"), "module example.test/other\n").unwrap();
+    std::fs::write(root.join("nested/a.go"), "package app\nfunc local() {}\n").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let result = raw_json(root, &["callees", "app::Run", "--file", "b.go", "--json"]);
+    let callees: Vec<_> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["callee"].as_str().unwrap())
+        .collect();
+    assert_eq!(callees.len(), 2, "{result}");
+    assert!(callees.contains(&"app::local") && callees.contains(&"tools::Help"));
+    assert!(
+        run_cli_json(
+            root,
+            &["callees", "app::Shadow", "--file", "b.go", "--json"]
+        )
+        .as_array()
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        result,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"callees","query":"app::Run","file":"b.go","format":"json"})
+        )
+    );
+    std::fs::write(root.join("go.mod"), "module example.test/new\n\ngo 1.24\n").unwrap();
+    assert_eq!(
+        run_cli_json(root, &["freshness", "--json"])["state"],
+        "stale"
+    );
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["files_indexed"], 0);
+    assert_eq!(stats["resolution_recomputed"], true);
+    let result = run_cli_json(root, &["callees", "app::Run", "--file", "b.go", "--json"]);
+    assert_eq!(result.as_array().unwrap().len(), 1);
+    assert_eq!(result[0]["callee"], "app::local");
+}
+
+#[test]
+fn new_languages_filter_and_outline_identically_over_cli_and_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for (file, source) in [
+        ("script.bash", "helper() { :; }\nrun() { helper; }\n"),
+        ("main.go", "package app\nfunc Run() {}\n"),
+        (
+            "main.lua",
+            "local function helper() end\nlocal function run() helper() end\nrun()\n",
+        ),
+        (
+            "schema.sql",
+            "CREATE TABLE public.items (id bigint); CREATE VIEW public.visible AS SELECT i.id FROM public.items AS i;",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    for (file, language) in [
+        ("script.bash", "bash"),
+        ("main.go", "go"),
+        ("main.lua", "lua"),
+        ("schema.sql", "sql"),
+    ] {
+        let cli = raw_json(root, &["outline", file, "--language", language, "--json"]);
+        assert!(
+            !cli["items"].as_array().unwrap().is_empty(),
+            "{language}: {cli}"
+        );
+        assert_eq!(
+            cli,
+            mcp_json(
+                root,
+                serde_json::json!({"action":"outline","file":file,"language":language,"format":"json"})
+            )
+        );
+    }
+    let lua = run_cli_json(root, &["callers", "helper", "--file", "main.lua", "--json"]);
+    assert_eq!(lua[0]["caller"], "run");
+}
+
+#[test]
+fn sql_dependencies_never_become_calls_or_index_internal_database_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".ast-index")).unwrap();
+    std::fs::write(
+        root.join(".ast-index/generated.sql"),
+        "CREATE TABLE forbidden (id int);",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("other.sqlite"),
+        "CREATE TABLE also_forbidden (id int);",
+    )
+    .unwrap();
+    std::fs::write(root.join("schema.sql"), "CREATE TABLE public.items (id bigint); CREATE VIEW public.visible AS SELECT i.id FROM public.items AS i;").unwrap();
+    for _ in 0..2 {
+        let stats = run_cli_json(root, &["index", "--json"]);
+        assert_eq!(stats["files_seen"], 1, "{stats}");
+        let deps = raw_json(
+            root,
+            &[
+                "refs",
+                "--file",
+                "schema.sql",
+                "--kind",
+                "dependency",
+                "--json",
+            ],
+        );
+        assert_eq!(deps["items"].as_array().unwrap().len(), 1, "{deps}");
+        assert!(!deps["items"][0]["resolved"].is_null(), "{deps}");
+        assert_eq!(deps["items"][0]["from_symbol"], "public.visible");
+        let status = raw_json(root, &["status", "--json"]);
+        assert_eq!(status["references"], 1, "{status}");
+        assert_eq!(status["resolved_references"], 1, "{status}");
+        assert_eq!(status["resolution_reasons"]["static_sql_object"], 1);
+        if stats["resolution_recomputed"] == true {
+            assert_eq!(
+                status["resolved_references"],
+                stats["resolution"]["resolved"]
+            );
+        }
+        assert_eq!(
+            deps,
+            mcp_json(
+                root,
+                serde_json::json!({"action":"refs","file":"schema.sql","kind":"dependency","format":"json"})
+            )
+        );
+        assert!(
+            run_cli_json(
+                root,
+                &["callers", "public.items", "--file", "schema.sql", "--json"]
+            )
+            .as_array()
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            run_cli_json(root, &["search", "forbidden", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn sql_relation_and_function_namespaces_preserve_ambiguity_independently() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("schema.sql"),
+        "CREATE TABLE app.same (id integer);\n\
+         CREATE FUNCTION app.same(value integer) RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$;\n\
+         CREATE VIEW app.consumer AS SELECT app.same(1) FROM app.same;",
+    )
+    .unwrap();
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    let symbols = run_cli_json(root, &["outline", "schema.sql", "--json"]);
+    let table = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|symbol| symbol["qualified"] == "app.same" && symbol["kind"] == "table")
+        .unwrap();
+    let function = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|symbol| symbol["qualified"] == "app.same" && symbol["kind"] == "function")
+        .unwrap();
+    assert_ne!(table["id"], function["id"]);
+    let refs = run_cli_json(root, &["refs", "schema.sql", "--json"]);
+    let dependency = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "dependency")
+        .unwrap();
+    let call = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "call")
+        .unwrap();
+    assert_eq!(dependency["resolved"], table["id"]);
+    assert_eq!(call["resolved"], function["id"]);
+    assert_eq!(dependency["from_symbol"], "app.consumer");
+    assert_eq!(call["from_symbol"], "app.consumer");
+    let callees = run_cli_json(root, &["callees", "app.consumer", "--json"]);
+    assert_eq!(callees.as_array().unwrap().len(), 1, "{callees}");
+    assert_eq!(callees[0]["callee"], "app.same");
+
+    std::fs::write(
+        root.join("overload.sql"),
+        "CREATE FUNCTION app.same(value text) RETURNS integer LANGUAGE sql AS $$ SELECT 2 $$;",
+    )
+    .unwrap();
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["files_indexed"], 1);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    let refs = run_cli_json(root, &["refs", "schema.sql", "--json"]);
+    let dependency = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "dependency")
+        .unwrap();
+    let call = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["kind"] == "call")
+        .unwrap();
+    assert_eq!(dependency["resolved"], table["id"]);
+    assert!(call["resolved"].is_null());
+    assert_eq!(call["reason"], "ambiguous");
+    assert!(
+        run_cli_json(root, &["callees", "app.consumer", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    std::fs::write(
+        root.join("duplicate.sql"),
+        "CREATE TABLE app.same (id integer);",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let refs = run_cli_json(
+        root,
+        &["refs", "schema.sql", "--kind", "dependency", "--json"],
+    );
+    assert_eq!(refs.as_array().unwrap().len(), 1);
+    assert!(refs[0]["resolved"].is_null());
+    assert_eq!(refs[0]["reason"], "ambiguous");
+}
+
+#[test]
+fn sql_qualified_references_cross_files_but_not_project_or_search_path_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join("nested/package.json"), "{}").unwrap();
+    for (file, source) in [
+        (
+            "schema.sql",
+            "CREATE TABLE public.users (id integer); CREATE TABLE public.root_only (id integer); CREATE TABLE local_only (id integer);",
+        ),
+        (
+            "query.sql",
+            "SELECT * FROM public.users; SELECT * FROM users; SELECT * FROM local_only;",
+        ),
+        (
+            "nested/schema.sql",
+            "CREATE TABLE public.users (id integer);",
+        ),
+        (
+            "nested/query.sql",
+            "SELECT * FROM public.users; SELECT * FROM public.root_only;",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    let root_symbols = run_cli_json(root, &["outline", "schema.sql", "--json"]);
+    let root_users = root_symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["qualified"] == "public.users")
+        .unwrap();
+    let nested_symbols = run_cli_json(root, &["outline", "nested/schema.sql", "--json"]);
+    let nested_users = &nested_symbols[0];
+    assert_ne!(root_users["id"], nested_users["id"]);
+    let refs = run_cli_json(root, &["refs", "query.sql", "--json"]);
+    assert_eq!(refs.as_array().unwrap().len(), 3);
+    assert_eq!(refs[0]["resolved"], root_users["id"]);
+    assert_eq!(refs[0]["reason"], "static_sql_object");
+    assert_eq!(refs[0]["confidence"], "same_directory");
+    for reference in [&refs[1], &refs[2]] {
+        assert!(reference["resolved"].is_null(), "{reference}");
+        assert_eq!(reference["reason"], "unknown_sql_object");
+    }
+    let refs = run_cli_json(root, &["refs", "nested/query.sql", "--json"]);
+    assert_eq!(refs.as_array().unwrap().len(), 2);
+    assert_eq!(refs[0]["resolved"], nested_users["id"]);
+    assert!(refs[1]["resolved"].is_null());
+    assert_eq!(refs[1]["reason"], "unknown_sql_object");
+}
+
+#[test]
+fn sql_quoted_identifier_punctuation_keeps_distinct_target_identities() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("quoted.sql"),
+        "CREATE TABLE app.\"x.y\" (id integer);\n\
+         CREATE TABLE \"app.x\".y (id integer);\n\
+         CREATE TABLE \"app.x.y\" (id integer);\n\
+         CREATE TABLE APP.Users (id integer);\n\
+         CREATE TABLE app.\"Users\" (id integer);\n\
+         CREATE VIEW app.punctuation AS SELECT * FROM app.\"x.y\" a JOIN \"app.x\".y b ON true JOIN \"app.x.y\" c ON true;\n\
+         CREATE VIEW app.cases AS SELECT * FROM \"app\".\"users\" a JOIN app.\"Users\" b ON true;",
+    )
+    .unwrap();
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    let symbols = run_cli_json(root, &["outline", "quoted.sql", "--json"]);
+    let refs = run_cli_json(
+        root,
+        &["refs", "quoted.sql", "--kind", "dependency", "--json"],
+    );
+    let expected = [
+        "app.\"x.y\"",
+        "\"app.x\".y",
+        "\"app.x.y\"",
+        "app.users",
+        "app.\"Users\"",
+    ];
+    assert_eq!(refs.as_array().unwrap().len(), expected.len());
+    let mut ids = std::collections::HashSet::new();
+    for (reference, qualified) in refs.as_array().unwrap().iter().zip(expected) {
+        let symbol = symbols
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["qualified"] == qualified && s["kind"] == "table")
+            .unwrap();
+        assert_eq!(
+            reference["resolved"], symbol["id"],
+            "{qualified}: {reference}"
+        );
+        assert_eq!(reference["reason"], "static_sql_object");
+        assert!(ids.insert(symbol["id"].as_i64().unwrap()));
+    }
+    assert_eq!(refs[0]["from_symbol"], "app.punctuation");
+    assert_eq!(refs[3]["from_symbol"], "app.cases");
+}
+
+#[test]
+fn sql_cte_and_search_path_reasons_survive_cli_and_mcp_queries() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("scopes.sql"),
+        "CREATE TABLE users (id integer);\n\
+         CREATE TABLE app.users (id integer);\n\
+         WITH users AS (SELECT * FROM app.users) SELECT * FROM users;\n\
+         SELECT * FROM users;\n\
+         SET search_path TO other;\n\
+         SELECT * FROM users;\n\
+         SELECT * FROM app.users;",
+    )
+    .unwrap();
+    let stats = run_cli_json(root, &["index", "--json"]);
+    assert_eq!(stats["parse_error_files"], 0, "{stats}");
+    let symbols = run_cli_json(root, &["outline", "scopes.sql", "--json"]);
+    let local = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["qualified"] == "users")
+        .unwrap();
+    let qualified = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["qualified"] == "app.users")
+        .unwrap();
+    let refs = raw_json(
+        root,
+        &["refs", "scopes.sql", "--kind", "dependency", "--json"],
+    );
+    let rows = refs["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 5, "{refs}");
+    assert_eq!(rows[0]["resolved"], qualified["id"]);
+    assert!(rows[1]["resolved"].is_null());
+    assert_eq!(rows[1]["reason"], "sql_cte");
+    assert_eq!(rows[2]["resolved"], local["id"]);
+    assert!(rows[3]["resolved"].is_null());
+    assert_eq!(rows[3]["reason"], "sql_dynamic_namespace");
+    assert_eq!(rows[4]["resolved"], qualified["id"]);
+    assert_eq!(
+        refs,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"refs","file":"scopes.sql","kind":"dependency","format":"json"})
+        )
+    );
+}
+
+#[test]
+fn lua_static_module_layouts_and_loader_mutations_remain_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("pkg")).unwrap();
+    std::fs::write(root.join("main.lua"), "local module = require('pkg')\nlocal function helper() end\nlocal function run() helper() end\nrun()\n").unwrap();
+    std::fs::write(
+        root.join("pkg/init.lua"),
+        "local M = {}\nfunction M.work() end\nreturn M\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("dynamic.lua"),
+        "package.path = custom\nrequire('pkg')\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("shadow.lua"),
+        "local require = loader\nrequire('pkg')\n",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let deps = run_cli_json(root, &["deps", "main.lua", "--json"]);
+    assert_eq!(deps[0]["target"], "pkg/init.lua");
+    for file in ["dynamic.lua", "shadow.lua"] {
+        let imports = run_cli_json(root, &["imports", file, "--json"]);
+        assert!(
+            imports
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["target"].is_null()),
+            "{imports}"
+        );
+    }
+    std::fs::write(root.join("pkg.lua"), "return {}\n").unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let imports = run_cli_json(root, &["imports", "main.lua", "--json"]);
+    assert!(imports[0]["target"].is_null());
+    assert_eq!(imports[0]["reason"], "ambiguous");
+}
+
+#[test]
+fn new_language_metadata_reads_share_scan_budget_and_reject_root_escape() {
+    use ast_index::{Engine, IndexOptions};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let source = "#!/bin/bash\nwork() { :; }\n";
+    std::fs::write(root.join("task"), source).unwrap();
+    let engine = Engine::open(root, None).unwrap();
+    let stats = engine
+        .index(&IndexOptions {
+            max_total_bytes: source.len() as u64,
+            ..IndexOptions::default()
+        })
+        .unwrap();
+    assert!(!stats.scan_complete);
+    assert_eq!(stats.files_indexed, 0);
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("go.mod"),
+        "module example.test/outside\n",
+    )
+    .unwrap();
+    std::fs::remove_file(root.join("task")).unwrap();
+    std::fs::write(root.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("go.mod"), root.join("go.mod")).unwrap();
+    let stats = engine.index(&IndexOptions::default()).unwrap();
+    assert!(!stats.scan_complete);
+    assert!(stats.files_failed > 0);
+    assert_eq!(stats.files_indexed, 1);
+}
+
+#[test]
+fn custom_sql_database_and_renamed_sqlite_are_excluded_from_source_indexing() {
+    use ast_index::{Engine, IndexOptions};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let database = root.join("cache.sql");
+    let renamed = root.join("renamed.sql");
+    {
+        let binary = rusqlite::Connection::open(&renamed).unwrap();
+        binary
+            .execute_batch("CREATE TABLE must_not_leak (id INTEGER);")
+            .unwrap();
+    }
+    std::fs::write(
+        root.join("source.sql"),
+        "CREATE TABLE public.visible (id integer);",
+    )
+    .unwrap();
+    let engine = Engine::open(root, Some(database)).unwrap();
+    for _ in 0..2 {
+        let stats = engine.index(&IndexOptions::default()).unwrap();
+        assert_eq!(stats.files_seen, 1, "{stats:?}");
+        assert_eq!(engine.status().unwrap().files, 1);
+        let symbols = engine
+            .execute(&ast_index::query::Query {
+                action: "outline".into(),
+                file: Some("source.sql".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(symbols["items"].as_array().unwrap().len(), 1);
+        assert_eq!(symbols["items"][0]["qualified"], "public.visible");
+        assert_eq!(
+            engine
+                .execute(&ast_index::query::Query {
+                    action: "freshness".into(),
+                    ..Default::default()
+                })
+                .unwrap()["state"],
+            "fresh_at_check"
+        );
+    }
+}
+
+#[test]
+fn sql_reference_owners_use_ranges_when_table_and_function_names_match() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("schema.sql"),
+        "CREATE FUNCTION app.helper() RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$;\n\
+         CREATE TABLE app.same (id integer);\n\
+         CREATE FUNCTION app.same() RETURNS integer LANGUAGE sql AS $$ SELECT app.helper() $$;\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run_cli_json(root, &["index", "--json"])["parse_error_files"],
+        0
+    );
+    let function = run_cli_json(
+        root,
+        &[
+            "callees",
+            "app.same",
+            "--file",
+            "schema.sql",
+            "--line",
+            "3",
+            "--json",
+        ],
+    );
+    assert_eq!(function.as_array().unwrap().len(), 1, "{function}");
+    assert_eq!(function[0]["callee"], "app.helper");
+    let table = run_cli_json(
+        root,
+        &[
+            "callees",
+            "app.same",
+            "--file",
+            "schema.sql",
+            "--line",
+            "2",
+            "--json",
+        ],
+    );
+    assert!(table.as_array().unwrap().is_empty(), "{table}");
+}

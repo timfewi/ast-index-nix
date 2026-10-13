@@ -6,12 +6,14 @@ requests, project execution, package discovery commands or Nix evaluation.
 
 ## Ownership
 
-- `lang.rs`, `parse.rs`, `parse/scopes.rs`, `parse/nix.rs`: grammar registry,
-  cached parsers/tag queries, bounded extraction, lexical bindings and Nix rules.
+- `lang.rs`, `parse.rs`, `parse/scopes.rs`, `parse/{nix,bash,go,lua,sql}.rs`:
+  grammar registry, cached parsers/tag queries, bounded extraction and
+  language-specific lexical, command and SQL object rules.
 - `index.rs`: bounded ignored-file walk, byte hashing, extraction fingerprints,
   project boundaries, persisted health and explicit freshness scans.
-- `imports.rs`, `resolve.rs`: literal indexed-file dependencies and conservative
-  call resolution. These layers never open import targets.
+- `imports.rs`, `resolve.rs`, `resolve/go.rs`: literal indexed-file dependencies,
+  Go package lookup and conservative call/SQL object resolution. These layers
+  never open import targets.
 - `store.rs`, `store/query.rs`, `store/history.rs`: additive schema migration,
   database writer lock, bounded SQL projections, graph traversal and two retained
   structural snapshots.
@@ -27,10 +29,14 @@ requests, project execution, package discovery commands or Nix evaluation.
 Files record relative paths, language, project boundary, byte hash, extraction
 fingerprint and parse-error coverage. Symbols record names, kinds, line/column
 ranges, bounded signatures and content hashes. References record owners, lexical
-blocking reasons, resolved targets and resolution provenance. Literal file import
-targets are separate from symbol call targets.
+blocking reasons, resolved targets and resolution provenance. Qualified names
+plus containing byte ranges attach references to their source owner, including
+disjoint definitions sharing a name; ambiguous call targets remain unresolved.
+Literal file import
+targets are separate from symbol call targets. SQL adds `table`/`view` symbol
+kinds and `dependency` references without treating relations as function calls.
 
-Schema version 5 upgrades older derived state additively. Extraction fingerprint
+Schema version 6 upgrades older derived state additively. Extraction fingerprint
 changes force reparsing even if file bytes have not changed. Existing incomplete
 snapshots that lack position information are marked unsuitable for comparison.
 Unknown newer schemas are rejected. An existing database is bound to its indexed
@@ -55,11 +61,38 @@ Python imports and JavaScript/TypeScript imports can resolve to indexed exported
 symbols. Re-exports, runtime loaders, build-system module remapping and inferred
 receiver types are not implemented.
 
-Nearest `Cargo.toml`, `package.json`, `pyproject.toml`, `setup.py` or `.git` markers
-partition projects without executing or interpreting those files. A boundary
-change invalidates resolution even when source bytes are unchanged. Nix retains
+Nearest `Cargo.toml`, `package.json`, `pyproject.toml`, `setup.py`, `go.mod` or
+`.git` markers partition projects without executing them. A bounded read of
+`go.mod` extracts the module declaration and hashes its bytes; other marker
+contents are not interpreted. Boundary or module-metadata changes invalidate
+resolution even when source bytes are unchanged. Nix retains
 its stricter same-file lexical resolution; selected and cross-file calls remain
 unresolved. Same-named ambiguous bindings are not selected arbitrarily.
+
+Bash calls require a unique unconditional definition and supported execution order;
+dynamic commands, namespace mutations and uncertain delayed bodies block targets.
+Literal source commands retain their paths, but an unknown runtime working
+directory prevents file-target resolution. Shebang detection reads bounded
+prefixes of extensionless regular files. Discovery also probes SQL headers and
+rejects binary SQLite content even under a `.sql` name. `.ast-index`, the active
+custom database path and its lock/journal sidecars are always excluded.
+
+Go call candidates are keyed by project, directory and declared package name.
+Package imports select a stable indexed file as a directory representative;
+`resolve/go.rs` expands that package and checks unique exported function targets,
+import aliases, lexical shadows and test-file isolation. No Go tooling runs.
+Lua calls require direct unchanged lexical bindings or supported members of a
+locally constructed table. Table escape/mutation and dynamic environments block
+resolution; literal requires use indexed project-root module layouts only.
+
+PostgreSQL extraction distinguishes table/view dependencies from function calls,
+normalizes unquoted identifiers and preserves quoted case. CTE references cannot
+fall back to schema objects. Qualified objects use unique same-project candidates;
+unqualified objects use unique same-file candidates and are blocked by observed
+namespace changes or runtime function-body search paths. Opaque function bodies
+remain unresolved. These are source relationships, not an executed migration
+history or evidence of a live database schema. SQL dependency references are
+available through `refs`, outside call graphs, impact traversal and file imports.
 
 Confidence strings (`same_file`, `same_directory`, `same_project`, `none`) describe
 location, not type-checked certainty. `reason` records evidence or an unresolved

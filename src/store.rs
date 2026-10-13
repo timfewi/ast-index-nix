@@ -15,7 +15,7 @@ mod history;
 mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +54,7 @@ pub struct SymbolRow {
     pub directory: String,
     pub name: String,
     pub exported: bool,
+    pub kind: SymbolKind,
     /// Case-sensitive qualified name such as `Store::open`.
     pub qualified: String,
 }
@@ -555,7 +556,7 @@ impl Store {
     /// Candidate symbols for reference resolution.
     pub fn resolution_symbols(&self) -> Result<Vec<SymbolRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT s.id, f.path, s.name, s.qualified, f.lang, f.project, s.exported FROM symbols s JOIN files f ON f.id = s.file_id",
+            "SELECT s.id, f.path, s.name, s.qualified, f.lang, f.project, s.exported, s.kind FROM symbols s JOIN files f ON f.id = s.file_id",
         )?;
         let rows = statement.query_map([], |row| {
             let file: String = row.get(1)?;
@@ -563,6 +564,8 @@ impl Store {
                 id: row.get(0)?,
                 language: row.get(4)?,
                 exported: row.get(6)?,
+                kind: SymbolKind::from_stored(&row.get::<_, String>(7)?)
+                    .unwrap_or(SymbolKind::Function),
                 project: row.get(5)?,
                 directory: directory_of(&file),
                 file,
@@ -573,12 +576,12 @@ impl Store {
         collect(rows)
     }
 
-    /// Call and import references that still need resolution.
+    /// Call and dependency references to resolve against indexed symbols.
     pub fn resolution_refs(&self) -> Result<Vec<RefRow>> {
         let mut statement = self.conn.prepare(
             "SELECT r.id, f.path, r.name, r.kind, r.path, f.lang, f.project, r.blocked
              FROM refs r JOIN files f ON f.id = r.file_id
-             WHERE r.kind = 'call'",
+             WHERE r.kind IN ('call', 'dependency')",
         )?;
         let rows = statement.query_map([], |row| {
             let file: String = row.get(1)?;
@@ -630,7 +633,7 @@ impl Store {
             |row| row.get(0),
         )?;
         let resolved_references: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM refs WHERE kind = 'call' AND resolved_symbol_id IS NOT NULL",
+            "SELECT COUNT(*) FROM refs WHERE kind IN ('call', 'dependency') AND resolved_symbol_id IS NOT NULL",
             [],
             |row| row.get(0),
         )?;

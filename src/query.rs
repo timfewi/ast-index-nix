@@ -140,7 +140,8 @@ impl Query {
             return Err(Error::Invalid("unsupported language filter".into()));
         }
         if self.kind.as_deref().is_some_and(|k| {
-            crate::model::SymbolKind::from_stored(k).is_none() && !matches!(k, "call" | "import")
+            crate::model::SymbolKind::from_stored(k).is_none()
+                && !matches!(k, "call" | "import" | "dependency")
         }) {
             return Err(Error::Invalid("unsupported kind filter".into()));
         }
@@ -148,9 +149,11 @@ impl Query {
             && self
                 .kind
                 .as_deref()
-                .is_some_and(|k| !matches!(k, "call" | "import"))
+                .is_some_and(|k| !matches!(k, "call" | "import" | "dependency"))
         {
-            return Err(Error::Invalid("refs kind must be call or import".into()));
+            return Err(Error::Invalid(
+                "refs kind must be call, import or dependency".into(),
+            ));
         }
         if matches!(self.action.as_str(), "semantic" | "diff" | "changes")
             && (self.language.is_some() || self.kind.is_some() || self.reason.is_some())

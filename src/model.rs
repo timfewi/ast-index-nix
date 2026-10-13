@@ -20,6 +20,8 @@ pub enum SymbolKind {
     TypeAlias,
     Macro,
     Impl,
+    Table,
+    View,
 }
 
 impl SymbolKind {
@@ -38,6 +40,8 @@ impl SymbolKind {
             Self::TypeAlias => "type_alias",
             Self::Macro => "macro",
             Self::Impl => "impl",
+            Self::Table => "table",
+            Self::View => "view",
         }
     }
 
@@ -57,6 +61,8 @@ impl SymbolKind {
             "type" | "type_alias" => Self::TypeAlias,
             "macro" => Self::Macro,
             "impl" => Self::Impl,
+            "table" => Self::Table,
+            "view" => Self::View,
             _ => return None,
         })
     }
@@ -77,6 +83,8 @@ impl SymbolKind {
             "type_alias" => Self::TypeAlias,
             "macro" => Self::Macro,
             "impl" => Self::Impl,
+            "table" => Self::Table,
+            "view" => Self::View,
             _ => return None,
         })
     }
@@ -88,6 +96,7 @@ impl SymbolKind {
 pub enum RefKind {
     Call,
     Import,
+    Dependency,
 }
 
 impl RefKind {
@@ -95,6 +104,7 @@ impl RefKind {
         match self {
             Self::Call => "call",
             Self::Import => "import",
+            Self::Dependency => "dependency",
         }
     }
 
@@ -102,6 +112,7 @@ impl RefKind {
         Some(match value {
             "call" => Self::Call,
             "import" => Self::Import,
+            "dependency" => Self::Dependency,
             _ => return None,
         })
     }

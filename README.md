@@ -1,8 +1,8 @@
 # ast-index
 
 A lightweight, local-first AST code index for agent harnesses. It extracts
-definitions, call sites and imports with tree-sitter, stores them in one SQLite
-file and exposes the result through three frontends that share one library:
+definitions, call sites, imports and SQL object dependencies with tree-sitter,
+stores them in one SQLite file and exposes the result through three frontends that share one library:
 
 - `ast-index` — a CLI with `--json` output for scripts and non-MCP harnesses,
 - `ast-index mcp` — a stdio MCP adapter with **exactly one tool** (`code_explore`),
@@ -38,8 +38,10 @@ ast-index callers resolve_all
 ast-index impact resolve_all --depth 3
 ```
 
-The index lives in `<root>/.ast-index/index.sqlite` and is gitignored. Add
-`.ast-index/` to your global ignore list if you index many repositories.
+The index lives in `<root>/.ast-index/index.sqlite` and is gitignored. The source
+walker always excludes `.ast-index/`, the active database and its sidecars,
+independently of ignore files. SQL support reads `.sql` source files, never
+embedded SQL strings; SQLite headers are rejected even under a `.sql` filename.
 
 ## MCP integration
 
@@ -110,6 +112,7 @@ ast-index describe helper --file src/lib.rs --line 12
 ast-index describe same --file src/main.js --line 1 --column 20
 ast-index search parse --subtree src --language rust --kind function --match-mode prefix
 ast-index refs src/main.py --reason shadowed
+ast-index refs schema.sql --kind dependency --json
 ast-index imports flake.nix
 ast-index importers modules/service.nix
 ast-index map resolve_all --budget 8192
@@ -135,7 +138,9 @@ Row ids are snapshot-local, not permanent symbol identifiers.
 
 File/subtree/language/kind filters apply to structural lists. For graph queries,
 file and position select the seed; subtree/language/kind restrict returned rows.
-Reference `kind` is `call` or `import`. Snapshot diffs support file/subtree;
+Reference `kind` is `call`, `import` or `dependency`. SQL object dependencies
+appear through `refs --kind dependency`; they do not become call/impact edges or
+file imports in `deps`. Snapshot diffs support file/subtree;
 changed-impact accepts explicit ranges rather than symbol filters. Semantic
 queries support an exact file filter and an optional symbol or display name.
 
@@ -154,9 +159,9 @@ files remain incomplete coverage. Parser/query changes invalidate cached
 extraction; resolver changes or project-boundary changes invalidate call edges.
 An unchanged pass reuses resolution. No watcher is required for correctness.
 
-Definitions cover Rust, Python, TypeScript/TSX, JavaScript and Nix. Call targets
-need supported lexical bindings, literal Rust module paths or supported named
-imports. JS/TS named imports can interoperate across indexed files with direct named exports;
+Definitions cover Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go,
+Lua and PostgreSQL SQL. Call targets need supported lexical bindings, literal
+module/package paths or supported named imports. JS/TS named imports can interoperate across indexed files with direct named exports;
 default exports and class members are not treated as named module exports. There is no
 fallback to an unrelated same-named symbol in another file or project. Parameters,
 assignments, ambiguous names, inferred receiver types, re-exports and unsupported
@@ -168,6 +173,23 @@ Nix static bindings, nested attributes, inherited names and named lambdas remain
 indexed. Nix call edges stay within statically visible same-file lexical scopes.
 Literal imports can link already indexed files; dynamic imports are explicitly
 unresolved. No Nix expression or imported path is evaluated or followed.
+
+| Added language | Static coverage and limits |
+| --- | --- |
+| Bash/Shell (`bash`) | `.sh`, `.bash` and extensionless `sh`/`bash`/`dash` shebang scripts, including `env -S`; functions, command sites and literal `source`/`.` records, with conservative definition order and namespace mutation checks. Source targets remain unresolved because runtime working directories are unknown. |
+| Go (`go`) | `.go` packages, functions, methods, types, structs, interfaces and imports; unique direct functions resolve across files of the same package and supported local module imports. Parameters and local bindings block fallback; receiver types, interface dispatch, complex callee expressions and dot imports are not inferred. |
+| Lua (`lua`) | `.lua` local/global functions, assigned functions, static table methods and literal `require`; direct unmodified same-file bindings resolve, while aliases, mutations, metatables and dynamic receivers stay unresolved. Imports use the project-root `module.lua` / `module/init.lua` layout and are blocked when loader changes are visible. |
+| SQL (`sql`) | `.sql` PostgreSQL tables, views/materialized views, functions, relation/foreign-key dependencies and separate function calls; quoted names and CTE scopes are respected. Qualified objects may resolve within one project; unqualified objects require a unique same-file definition. No runtime `search_path` is assumed. |
+
+Go module declarations are read and hashed within a bounded metadata budget;
+changing `go.mod` invalidates freshness and resolution without requiring unchanged
+Go files to be reparsed. Test-file definitions do not supply production targets;
+Go filenames beginning with `_` or `.` never supply package evidence.
+Build tags, workspaces, replacements and downloaded dependencies are not evaluated.
+Lua import layout is structural evidence, not a guarantee about the runtime loader.
+PostgreSQL procedural or quoted function bodies remain explicitly unresolved;
+supported parsed SQL bodies retain static references. Other SQL dialects, Astro,
+embedded shell fragments and Zsh-specific syntax are outside this expansion.
 
 `map` uses static graph counts and optional focus, with bounded signatures and a
 1024–32768 byte budget. Token counts are explicitly approximate. `diff` retains

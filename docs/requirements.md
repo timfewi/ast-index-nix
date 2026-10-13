@@ -1,8 +1,9 @@
 # Requirements and evidence
 
-Scope for the local navigation expansion. "Evidence" names the check that demonstrates the row;
-the expansion was verified with `scripts/check fast` (29 unit and 35 integration tests).
-Source-review evidence and evaluation-only checks are identified explicitly.
+Scope for local structural navigation. "Evidence" names targeted checks;
+source-review evidence and evaluation-only checks are identified explicitly.
+The current fast gate and remaining coverage limits are recorded in
+[development.md](development.md).
 
 | ID | Requirement | Status | Evidence |
 | --- | --- | --- | --- |
@@ -33,7 +34,7 @@ Source-review evidence and evaluation-only checks are identified explicitly.
 | R25 | Service group is optional; an unset group uses the user's primary group | done | `checks.module-eval` (explicit group passed through, `Group=` absent when unset) |
 | R26 | Nix static bindings and inherited attributes, nested qualified names, named lambdas, curried call sites and literal module imports | done | `parse::tests::nix_extracts_bindings_functions_and_literal_imports`, `lang::tests::detects_nix_files_case_insensitively` |
 | R27 | Nix calls resolve only to unique, statically visible same-file functions; shadowed, dynamic, selected and cross-file calls remain unresolved | done | `parse::tests::nix_call_targets_respect_recursive_and_nested_let_scopes`, `parse::tests::nix_dynamic_shadowed_and_external_calls_stay_unresolved`, `parse::tests::nix_dynamic_imports_are_not_reported_as_literal_paths`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets`, `integration::nix_ambiguous_qualified_targets_stay_unresolved` |
-| R28 | Same-named nested definitions keep distinct reference owners through full qualified chains | done | `integration::same_named_nested_functions_keep_distinct_callers`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets` |
+| R28 | Same-named definitions keep distinct reference owners through qualified chains and containing source positions | done | `integration::same_named_nested_functions_keep_distinct_callers`, `integration::nix_index_answers_queries_without_guessing_dynamic_or_cross_file_targets` |
 
 ## Expansion evidence
 
@@ -56,12 +57,26 @@ Source-review evidence and evaluation-only checks are identified explicitly.
 | R43 | Default derived-state paths cannot follow source-controlled symlinks | done | `source_controlled_symlinks_cannot_redirect_default_index_writes` |
 | R44 | Legacy schema preservation, bounded special-file reads and interrupted-query recovery | done | `migration_preserves_legacy_rows_and_requires_new_extraction`, `special_files_are_rejected_without_waiting_for_a_writer`, `interrupted_query_releases_snapshot_and_resets_the_budget` |
 
+## Added language evidence
+
+| ID | Requirement | Status | Evidence |
+| --- | --- | --- | --- |
+| R45 | Bash function definitions, static commands/source records, definition order and dynamic namespace barriers | done | `parse::bash::tests::*`, `shell_shebangs_and_incremental_detection_are_bounded_and_static` |
+| R46 | Go declarations, package-wide direct calls, local module imports, lexical shadows and test-file isolation | done | `parse::go::tests::*`, `resolve::go::tests::*`, `go_packages_imports_module_changes_and_shadowing_share_cli_mcp_contracts` |
+| R47 | Lua lexical/global functions, static table methods, literal requires, shadowing, reassignment and loader barriers | done | `parse::lua::tests::*`, `new_languages_filter_and_outline_identically_over_cli_and_mcp`, `lua_static_module_layouts_and_loader_mutations_remain_explicit` |
+| R48 | PostgreSQL tables/views/functions, static dependencies separate from calls, quoted identifiers, CTEs and unresolved dynamic namespaces/bodies | done | `parse::sql::tests::*`, `sql_dependencies_never_become_calls_or_index_internal_database_files`, `custom_sql_database_and_renamed_sqlite_are_excluded_from_source_indexing`, SQL namespace/CTE/quoted-identifier integration tests |
+| R49 | Added language filters, positions/owners and CLI/MCP output contracts use the existing tool | done | `new_languages_filter_and_outline_identically_over_cli_and_mcp`, `every_tag_query_compiles_for_its_grammar`, `sql_reference_owners_use_ranges_when_table_and_function_names_match`, language parser tests |
+| R50 | Extensionless shebang detection, module metadata freshness, repeated indexing, binary SQLite header rejection and unconditional exclusion of internal index files | done | `shell_shebangs_and_incremental_detection_are_bounded_and_static`, `go_packages_imports_module_changes_and_shadowing_share_cli_mcp_contracts`, `sql_dependencies_never_become_calls_or_index_internal_database_files`, `custom_sql_database_and_renamed_sqlite_are_excluded_from_source_indexing`, SQL namespace/CTE/quoted-identifier integration tests |
+| R51 | Header, Go metadata and source reads share a byte budget, including failures; external module metadata is rejected | done | `failed_reads_consume_the_shared_budget`, `new_language_metadata_reads_share_scan_budget_and_reject_root_escape` |
+
 ## Deliberately deferred
 
 - Watcher acceleration: explicit byte scans remain the correctness mechanism.
 - FTS5/vector search: literal indexed searches and bounded substring scans cover
   the present interface; no embedding runtime or model downloads.
-- New grammar languages beyond Rust, Python, TS/TSX, JS and Nix.
+- Astro, other SQL dialects, Zsh-specific syntax and embedded shell/SQL fragments.
+- Go build tags, workspace/replacement evaluation and external dependency loading.
+- Runtime shell working directories, Lua module loaders and SQL search paths.
 - Rename/codemods, source write actions, project execution and runtime networking.
 - Multiple roots in one database; one root keeps writer and path semantics clear.
 - Starting SCIP producers, language servers or build tools.
@@ -72,7 +87,14 @@ The fixtures demonstrate specific structural cases, not semantic accuracy across
 arbitrary programs. Dynamic dispatch, reflection, macros, generated code,
 re-exports, complex import aliases, custom module layouts and runtime loaders are
 not fully resolved. Named JS/TS imports require a directly exported indexed symbol;
-Nix calls stay local and lexical. Unsupported bindings remain unresolved.
+Nix and Lua calls stay local and lexical; Bash calls use supported static execution
+order. Go package relationships do not establish build-configuration correctness.
+Lua imports use a documented project-root layout, not runtime loader discovery.
+SQL support is a PostgreSQL source subset: it does not reconstruct a database or
+migration history, infer overloaded function signatures or inspect procedural
+bodies. Schema-qualified dependencies may cross indexed files within one project;
+unqualified relationships are restricted to unique same-file objects. Unsupported
+bindings remain unresolved.
 
 Snapshots match unique structural identities, not semantic identity through moves
 or renames. Line ranges applied to old and new snapshots can refer to different

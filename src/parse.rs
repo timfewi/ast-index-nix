@@ -9,8 +9,12 @@ use crate::error::{Error, Result};
 use crate::lang::LangSpec;
 use crate::model::{RefKind, SymbolKind};
 
+mod bash;
+pub(crate) mod go;
+mod lua;
 mod nix;
 mod scopes;
+mod sql;
 
 /// A definition found in one file, with byte ranges used for nesting.
 #[derive(Debug, Clone)]
@@ -81,6 +85,13 @@ impl ParserCache {
         let tree = parser
             .parse(source, None)
             .ok_or_else(|| Error::Invalid("parser returned no tree".into()))?;
+        match spec.id {
+            "bash" => return bash::extract(source, tree.root_node()),
+            "go" => return go::extract(source, tree.root_node()),
+            "lua" => return lua::extract(source, tree.root_node()),
+            "sql" => return sql::extract(source, tree.root_node()),
+            _ => {}
+        }
         extract(source, spec, &tree, query)
     }
 }

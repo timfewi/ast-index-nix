@@ -7,10 +7,14 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/lang.rs](../src/lang.rs), [src/parse.rs](../src/parse.rs),
   [src/parse/scopes.rs](../src/parse/scopes.rs), [src/parse/nix.rs](../src/parse/nix.rs):
   cached extraction, lexical bindings, signatures, positions and Nix syntax.
+- [src/parse/bash.rs](../src/parse/bash.rs), [src/parse/go.rs](../src/parse/go.rs),
+  [src/parse/lua.rs](../src/parse/lua.rs), [src/parse/sql.rs](../src/parse/sql.rs):
+  bounded shell commands, Go declarations, Lua bindings and PostgreSQL objects.
 - [src/index.rs](../src/index.rs): bounded walk, content/fingerprint cache,
   project boundaries, diagnostics, freshness and coordinated writes.
-- [src/imports.rs](../src/imports.rs), [src/resolve.rs](../src/resolve.rs):
-  static indexed-file dependencies and conservative call relationships.
+- [src/imports.rs](../src/imports.rs), [src/resolve.rs](../src/resolve.rs),
+  [src/resolve/go.rs](../src/resolve/go.rs): static indexed-file dependencies,
+  Go package lookup and conservative call/SQL object relationships.
 - [src/store.rs](../src/store.rs), [src/store/query.rs](../src/store/query.rs),
   [src/store/history.rs](../src/store/history.rs): additive schema, writer lock,
   SQL projections, bounded traversal and two structural snapshots.
@@ -26,9 +30,16 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 callees, impact, refs, imports, importers, deps, map, changes, diff, semantic.
 CLI also owns explicit `index` and `import-scip` mutations. Query file/name and
 optional line/column select symbols. Lists use generation-bound pages.
-Languages: Rust, Python, TypeScript/TSX, JavaScript and Nix. No bare-name fallback
-to other files. JS/TS named imports can interoperate. Unsupported lexical,
-dynamic, imported and external targets remain unresolved. Nix calls remain local.
+Languages: Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go, Lua and
+PostgreSQL SQL. No unrelated bare-name fallback; Go has explicit package scope.
+JS/TS named imports can interoperate; Nix/Lua calls remain local. Shell source
+paths retain unresolved working directories. Go module hashes govern freshness;
+Lua requires use project-root layouts. SQL `dependency` refs are separate from
+calls/impact and file imports; qualified objects stay within one project and
+unqualified objects within one file. Dynamic targets remain unresolved. Astro
+and embedded shell/SQL are excluded. `.ast-index`, the active database/sidecars
+and `.sql` files with SQLite headers are excluded from source input. Source ranges distinguish
+same-named reference owners; ambiguous targets remain unresolved.
 
 Status reports snapshot coverage; freshness requires an explicit bounded byte
 scan. A successful old check does not prove present freshness. Semantic evidence

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::model::Confidence;
 use crate::store::{RefRow, Store, SymbolRow};
+pub(crate) mod go;
 
 /// Invalidate edges independently of extraction when resolution rules change.
 pub fn fingerprint() -> String {
@@ -15,6 +16,7 @@ pub fn fingerprint() -> String {
     HASH.get_or_init(|| {
         let mut hash = blake3::Hasher::new();
         hash.update(include_bytes!("resolve.rs"));
+        hash.update(include_bytes!("resolve/go.rs"));
         hash.update(include_bytes!("imports.rs"));
         hash.update(include_bytes!("index.rs"));
         hash.finalize().to_hex().to_string()
@@ -41,6 +43,7 @@ struct ScopeMaps {
     exported: HashMap<(String, String), Vec<i64>>,
     imports: HashMap<(String, String), String>,
     files: HashMap<i64, String>,
+    sql: HashMap<(String, String, String), Vec<i64>>,
 }
 
 impl ScopeMaps {
@@ -48,6 +51,24 @@ impl ScopeMaps {
         let mut maps = Self::default();
         for symbol in symbols {
             maps.files.insert(symbol.id, symbol.file.clone());
+            if symbol.language == "sql" {
+                let namespace = match symbol.kind {
+                    crate::model::SymbolKind::Table | crate::model::SymbolKind::View => {
+                        "dependency"
+                    }
+                    crate::model::SymbolKind::Function => "call",
+                    _ => continue,
+                };
+                for scope in [
+                    format!("file:{}", symbol.file),
+                    format!("project:{}", symbol.project),
+                ] {
+                    maps.sql
+                        .entry((scope, namespace.into(), symbol.qualified.clone()))
+                        .or_default()
+                        .push(symbol.id);
+                }
+            }
             maps.qualified_by_file
                 .entry((symbol.file.clone(), symbol.qualified.clone()))
                 .or_default()
@@ -77,6 +98,20 @@ impl ScopeMaps {
     fn ids(&self, reference: &RefRow) -> Option<&Vec<i64>> {
         if reference.blocked.is_some() {
             return None;
+        }
+        if reference.language == "sql" {
+            let path = reference.path.as_deref()?;
+            let (scope, name) = if let Some(name) = path.strip_prefix("@sql-qualified:") {
+                (format!("project:{}", reference.project), name)
+            } else {
+                (
+                    format!("file:{}", reference.file),
+                    path.strip_prefix("@sql-local:")?,
+                )
+            };
+            return self
+                .sql
+                .get(&(scope, reference.kind.as_str().into(), name.into()));
         }
         if let Some((module, name)) = imported_name(reference) {
             let target = self.imports.get(&(reference.file.clone(), module))?;
@@ -115,6 +150,9 @@ impl ScopeMaps {
             if ids.len() > 1 {
                 return "ambiguous";
             }
+            if reference.language == "sql" {
+                return "static_sql_object";
+            }
             if imported_name(reference).is_some() {
                 return "imported_symbol";
             }
@@ -123,7 +161,9 @@ impl ScopeMaps {
             }
             return "lexical_same_file";
         }
-        if imported_name(reference).is_some() {
+        if reference.language == "sql" {
+            "unknown_sql_object"
+        } else if imported_name(reference).is_some() {
             "unsupported_import"
         } else if rust_relative(reference).is_some() {
             "unknown"
@@ -202,20 +242,26 @@ fn scoped_key(language: &str, project: &str, name: &str) -> String {
 pub fn resolve_all(store: &Store) -> Result<ResolutionStats> {
     let symbols = store.resolution_symbols()?;
     let references = store.resolution_refs()?;
+    let go = go::GoResolver::new(store, &symbols)?;
     let mut maps = ScopeMaps::build(&symbols);
     maps.imports = store.conn.prepare("SELECT f.path, r.name, r.import_target FROM refs r JOIN files f ON f.id=r.file_id WHERE r.kind='import' AND r.import_target IS NOT NULL")?
         .query_map([], |r| Ok(((r.get(0)?,r.get(1)?),r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
 
     let mut stats = ResolutionStats::default();
     for reference in &references {
-        match maps.candidates(reference) {
-            Some((symbol_id, confidence)) => {
-                store.set_resolution(
-                    reference.id,
-                    Some(symbol_id),
-                    confidence,
-                    maps.reason(reference),
-                )?;
+        let (target, confidence, reason) = if reference.language == "go" {
+            go.resolve(reference)
+        } else {
+            let (target, confidence) = maps
+                .candidates(reference)
+                .map_or((None, Confidence::None), |(id, confidence)| {
+                    (Some(id), confidence)
+                });
+            (target, confidence, maps.reason(reference))
+        };
+        store.set_resolution(reference.id, target, confidence, reason)?;
+        match target {
+            Some(_) => {
                 stats.resolved += 1;
                 match confidence {
                     Confidence::Exact => stats.same_file += 1,
@@ -225,13 +271,7 @@ pub fn resolve_all(store: &Store) -> Result<ResolutionStats> {
                 }
             }
             None => {
-                store.set_resolution(
-                    reference.id,
-                    None,
-                    Confidence::None,
-                    maps.reason(reference),
-                )?;
-                if maps.reason(reference) == "ambiguous" {
+                if reason == "ambiguous" {
                     stats.ambiguous += 1;
                 } else {
                     stats.unmatched += 1;
@@ -251,6 +291,7 @@ mod tests {
             language: "rust".into(),
             project: String::new(),
             exported: false,
+            kind: crate::model::SymbolKind::Function,
             file: file.into(),
             directory: crate::store::directory_of(file),
             name: qualified.rsplit("::").next().unwrap().into(),
