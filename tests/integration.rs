@@ -527,6 +527,41 @@ fn reports_not_indexed_with_exit_code_two() {
     assert!(stderr.contains("ast-index index"), "stderr: {stderr}");
 }
 
+#[test]
+fn nice_status_renders_human_output_and_rejects_json_in_any_order() {
+    let fixture = fixture();
+    let root = fixture.path();
+    let unindexed = run_cli(root, &["status", "--nice"]);
+    assert!(unindexed.status.success());
+    assert!(String::from_utf8_lossy(&unindexed.stdout).contains("Not indexed yet."));
+    run_cli_json(root, &["index", "--json"]);
+
+    let human = run_cli(root, &["status", "--nice"]);
+    assert!(human.status.success());
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("State         no known problems;"), "{text}");
+    assert!(text.contains(" UTC ("), "{text}");
+    assert!(text.contains("Files         3"), "{text}");
+    assert!(text.find("\n  rust").unwrap() < text.find("\n  python").unwrap());
+    let status = run_cli_json(root, &["status", "--json"]);
+    assert_eq!(status["indexed"], true);
+    assert_eq!(status["files"], 3);
+
+    for args in [
+        ["--json", "status", "--nice"],
+        ["status", "--json", "--nice"],
+        ["status", "--nice", "--json"],
+    ] {
+        let output = run_cli(root, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("cannot be used with"), "{args:?}: {error}");
+        assert!(error.contains("--nice"), "{args:?}: {error}");
+        assert!(error.contains("--json"), "{args:?}: {error}");
+    }
+}
+
 fn read_line(reader: &mut impl BufRead) -> String {
     let mut line = String::new();
     reader.read_line(&mut line).expect("read line");

@@ -26,7 +26,7 @@ regression failed before its fix and passed in the final fast gate.
 Requirements and remaining static-analysis limits are recorded in
 [requirements.md](requirements.md). Local documentation links and final diffs
 were checked. No Nix package builds, VM tests or host activation were performed.
-Module evaluations retain the existing unset `system.stateVersion` warning.
+Module evaluation fixtures explicitly set `system.stateVersion` to avoid implicit defaults.
 
 ## Environment
 

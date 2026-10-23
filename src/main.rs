@@ -102,7 +102,11 @@ enum Command {
         #[arg(long,default_value="definition",value_parser=["definition","reference","implementation"])]
         relation: String,
     },
-    Status,
+    Status {
+        /// Human-friendly layout: plain-language state, dates, sorted tables.
+        #[arg(long)]
+        nice: bool,
+    },
     /// Explicitly compare bounded current content with the indexed snapshot.
     Freshness,
     Outline {
@@ -144,6 +148,13 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.options.json && matches!(cli.command, Command::Status { nice: true }) {
+        clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "the argument '--nice' cannot be used with '--json'",
+        )
+        .exit();
+    }
     let json = cli.options.json;
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -234,6 +245,7 @@ fn run(cli: Cli) -> ast_index::Result<()> {
                 reason: o.reason,
                 ..Query::default()
             };
+            let mut nice = false;
             let (action, query) = match command {
                 Command::Imports { path } => {
                     if path.is_some() {
@@ -268,7 +280,10 @@ fn run(cli: Cli) -> ast_index::Result<()> {
                     request.relation = Some(relation);
                     ("semantic", query)
                 }
-                Command::Status => ("status", None),
+                Command::Status { nice: human } => {
+                    nice = human;
+                    ("status", None)
+                }
                 Command::Freshness => ("freshness", None),
                 Command::Outline { path } => {
                     request.file = Some(path);
@@ -290,14 +305,17 @@ fn run(cli: Cli) -> ast_index::Result<()> {
             request.action = action.into();
             request.query = query;
             let value = engine.execute(&request)?;
-            println!(
-                "{}",
-                if o.json {
-                    serde_json::to_string(&value)?
-                } else {
-                    report::query_text(&value)
-                }
-            );
+            let text = if o.json {
+                serde_json::to_string(&value)?
+            } else if nice {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs() as i64);
+                report::status_nice(&serde_json::from_value(value)?, now)
+            } else {
+                report::query_text(&value)
+            };
+            println!("{text}");
             Ok(())
         }
     }

@@ -31,12 +31,15 @@ target/release/ast-index index --exclude secrets/
 
 # Ask questions.
 ast-index status
+ast-index status --nice   # human-readable: dates, grouped counts, sorted tables
 ast-index search parse
 ast-index outline src/parse.rs
 ast-index describe ScopeMaps::build
 ast-index callers resolve_all
 ast-index impact resolve_all --depth 3
 ```
+
+The human-readable `status --nice` format cannot be combined with `--json`.
 
 The index lives in `<root>/.ast-index/index.sqlite` and is gitignored. The source
 walker always excludes `.ast-index/`, the active database and its sidecars,

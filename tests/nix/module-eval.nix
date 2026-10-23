@@ -17,6 +17,7 @@ let
       modules = [
         self.nixosModules.default
         {
+          system.stateVersion = "25.11";
           services.astIndex = {
             enable = true;
             user = "root";
