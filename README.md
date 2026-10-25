@@ -41,10 +41,29 @@ ast-index impact resolve_all --depth 3
 
 The human-readable `status --nice` format cannot be combined with `--json`.
 
-The index lives in `<root>/.ast-index/index.sqlite` and is gitignored. The source
-walker always excludes `.ast-index/`, the active database and its sidecars,
-independently of ignore files. SQL support reads `.sql` source files, never
-embedded SQL strings; SQLite headers are rejected even under a `.sql` filename.
+By default the index lives in `<root>/.ast-index/index.sqlite` and is gitignored.
+Use global `--state-dir <directory>` (or `AST_INDEX_STATE_DIR`) for a dedicated
+state directory, independent of the source root:
+
+```bash
+ast-index --root /srv/project --state-dir /var/lib/ast-index/instance-a index
+ast-index --root /srv/project --state-dir /var/lib/ast-index/instance-a search parse
+ast-index --root /srv/project --state-dir /var/lib/ast-index/instance-b index
+```
+
+Each directory contains its own `index.sqlite`, retained snapshots, semantic
+imports, freshness metadata, SQLite sidecars and `index.writer.lock`. Every
+in-process CLI operation, stdio MCP and `serve --index` honors the selection;
+use the same arguments for later refreshes and queries. Relative state paths
+are relative to the process working directory, not `--root`. `--state-dir`
+conflicts with the existing `--db` / `AST_INDEX_DB` file override. Empty,
+unusable or symlinked state directories/databases fail rather than falling
+back to shared state. Parent directories must be trusted.
+
+The source walker always excludes `.ast-index/`, the entire explicitly selected
+state directory, the active database and its sidecars, independently of ignore
+files. SQL support reads `.sql` source files, never embedded SQL strings; SQLite
+headers are rejected even under a `.sql` filename.
 
 ## MCP integration
 
@@ -259,6 +278,13 @@ a checkout, use a new local database. The default index directory/database canno
 be redirected through a symlink. Local derived state contains source signatures
 and should remain gitignored with the same privacy treatment as source code.
 
+Separate state directories prevent accidental sharing, not access by other
+processes under the same Unix UID. Enforce access boundaries with separate
+OS identities/sandboxes and directory permissions. Socket paths and their
+listener locks are independent of database state: use distinct sockets for
+independent instances. A socket proxy uses only its server's state; passing
+`--state-dir` to `mcp --socket` is rejected instead of silently ignored.
+
 ## NixOS service
 
 Declare and lock the input in the consuming flake:
@@ -278,13 +304,20 @@ a host module such as:
     enable = true;
     root = "/srv/ast-index/project";
     user = "coding-agent";
+    stateDir = "/var/lib/ast-index/instance-a";
     socket = "/run/ast-index/socket";
   };
 }
 ```
 
 The consuming host creates the service account and supplies an existing root
-directory writable by that account.
+directory readable by that account. With `stateDir`, systemd creates the
+directory with mode `0700` owned by the service user/group (`StateDirectory`);
+only state and the socket directory are writable through the service sandbox.
+The option accepts a normalized path below `/var/lib` with letters, digits,
+dots, underscores, hyphens and slashes (no empty, `.` or `..` components).
+The default `stateDir = null` retains standalone `<root>/.ast-index` storage
+and requires a writable root. No network access is added.
 
 Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. Each mutation
 holds the database writer lock; socket ownership is separate. The

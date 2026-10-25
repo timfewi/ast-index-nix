@@ -22,6 +22,14 @@ struct Cli {
     root: Option<PathBuf>,
     #[arg(long, global = true, env = "AST_INDEX_DB")]
     db: Option<PathBuf>,
+    /// Dedicated index state directory (relative paths use the working directory).
+    #[arg(
+        long,
+        global = true,
+        env = "AST_INDEX_STATE_DIR",
+        conflicts_with = "db"
+    )]
+    state_dir: Option<PathBuf>,
     #[command(flatten)]
     options: QueryOptions,
     #[command(subcommand)]
@@ -178,12 +186,21 @@ fn run(cli: Cli) -> ast_index::Result<()> {
         socket: Some(socket),
     } = &cli.command
     {
+        if cli.state_dir.is_some() {
+            return Err(Error::Invalid(
+                "--state-dir selects local state; configure it on serve, not the socket proxy"
+                    .into(),
+            ));
+        }
         return serve::run_proxy(socket);
     }
     let root = cli
         .root
         .unwrap_or(std::env::current_dir().map_err(|e| Error::io(".", e))?);
-    let engine = Engine::open(root, cli.db)?;
+    let engine = match cli.state_dir {
+        Some(state_dir) => Engine::open_state_dir(root, state_dir)?,
+        None => Engine::open(root, cli.db)?,
+    };
     match cli.command {
         Command::ImportScip { artifact, manifest } => {
             let result = ast_index::scip::import(

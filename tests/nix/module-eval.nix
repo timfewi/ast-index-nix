@@ -29,6 +29,12 @@ let
     }).config;
   explicit = mkConfig { group = "root"; };
   implicit = mkConfig { };
+  isolated = mkConfig {
+    stateDir = "/var/lib/ast-index/instance-a";
+    group = "root";
+  };
+  isolatedService = isolated.systemd.services.ast-index.serviceConfig;
+  invalid = mkConfig { stateDir = "/var/lib/../shared"; };
   escaped = mkConfig {
     root = "/var/lib/ast index%root";
     socket = "/run/ast-index/my socket%";
@@ -49,6 +55,26 @@ if
   && explicitService.serviceConfig.User == "root"
   && explicitService.serviceConfig.Group == "root"
   && !(implicitService.serviceConfig ? Group)
+  && implicit.services.astIndex.stateDir == null
+  && !(implicitService.serviceConfig ? StateDirectory)
+  && builtins.elem implicit.services.astIndex.root implicitService.serviceConfig.ReadWritePaths
+  && isolatedService.StateDirectory == "ast-index/instance-a"
+  && isolatedService.StateDirectoryMode == "0700"
+  && isolatedService.User == "root"
+  && isolatedService.Group == "root"
+  &&
+    isolatedService.ReadWritePaths == [
+      "/var/lib/ast-index/instance-a"
+      "/run/ast-index"
+    ]
+  && isolatedService.ProtectSystem == "strict"
+  && isolatedService.ProtectHome == "read-only"
+  && isolatedService.RestrictAddressFamilies == [ "AF_UNIX" ]
+  && nixpkgs.lib.hasInfix ''"--state-dir" "/var/lib/ast-index/instance-a"'' isolatedService.ExecStart
+  && builtins.any (
+    assertion:
+    !assertion.assertion && nixpkgs.lib.hasPrefix "services.astIndex.stateDir" assertion.message
+  ) invalid.assertions
   && nixpkgs.lib.hasInfix ''"--root" "/var/lib/ast index%%root"'' escapedExec
   && nixpkgs.lib.hasInfix ''"--socket" "/run/ast-index/my socket%%"'' escapedExec
   && nixpkgs.lib.hasInfix ''"--exclude" "private notes/*"'' escapedExec

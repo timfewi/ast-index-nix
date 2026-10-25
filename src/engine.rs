@@ -38,6 +38,15 @@ impl Engine {
         Ok(Self { store, root })
     }
 
+    /// Open independent derived state for `root` in a dedicated directory.
+    pub fn open_state_dir(root: impl Into<PathBuf>, state_dir: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        let root = root.canonicalize().map_err(|e| Error::io(&root, e))?;
+        let store = Store::open_state_dir(state_dir)?;
+        store.require_root(&root)?;
+        Ok(Self { store, root })
+    }
+
     /// Execute one bounded query against a consistent database snapshot.
     pub fn execute(&self, query: &crate::query::Query) -> Result<serde_json::Value> {
         query.validate()?;
@@ -124,9 +133,8 @@ impl Engine {
             return Ok(());
         }
         Err(Error::NotIndexed(format!(
-            "no index at {}: run `ast-index index {}` first",
-            self.root.display(),
-            self.root.display()
+            "no index at {}: run `ast-index index` with the same --root and --state-dir/--db selection first",
+            self.store.path().display()
         )))
     }
 

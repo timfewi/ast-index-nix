@@ -100,6 +100,258 @@ fn run_cli_json(root: &Path, args: &[&str]) -> Value {
 }
 
 #[test]
+fn state_dirs_isolate_indexes_snapshots_freshness_and_writer_locks() {
+    use ast_index::{engine::Engine, index::IndexOptions};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let states = tempfile::tempdir().unwrap();
+    let first = states.path().join("instance-a");
+    let second = states.path().join("instance-b");
+    let a = first.to_str().unwrap();
+    let b = second.to_str().unwrap();
+    std::fs::write(root.join("lib.rs"), "fn original() {}").unwrap();
+    for state in [a, b] {
+        run_cli_json(root, &["--state-dir", state, "index", "--json"]);
+    }
+    assert!(!root.join(".ast-index").exists());
+    assert!(first.join("index.sqlite").is_file());
+    assert!(second.join("index.sqlite").is_file());
+    let before = run_cli_json(root, &["--state-dir", b, "status", "--json"]);
+    std::fs::write(root.join("lib.rs"), "fn replacement() {}").unwrap();
+    run_cli_json(root, &["--state-dir", a, "index", "--json"]);
+    assert_eq!(
+        run_cli_json(root, &["--state-dir", b, "status", "--json"]),
+        before
+    );
+    for (state, present, absent) in [
+        (a, "replacement", "original"),
+        (b, "original", "replacement"),
+    ] {
+        let found = run_cli_json(root, &["--state-dir", state, "search", present, "--json"]);
+        assert_eq!(found.as_array().unwrap().len(), 1);
+        let missing = run_cli_json(root, &["--state-dir", state, "search", absent, "--json"]);
+        assert!(missing.as_array().unwrap().is_empty());
+    }
+    assert!(
+        run_cli(root, &["--state-dir", a, "diff", "--json"])
+            .status
+            .success()
+    );
+    let missing_baseline = run_cli(root, &["--state-dir", b, "diff", "--json"]);
+    assert!(!missing_baseline.status.success());
+    assert!(String::from_utf8_lossy(&missing_baseline.stderr).contains("no previous"));
+    run_cli_json(root, &["--state-dir", a, "freshness", "--json"]);
+    assert_eq!(
+        run_cli_json(root, &["--state-dir", b, "status", "--json"]),
+        before
+    );
+
+    let engine = Engine::open_state_dir(root, &first).unwrap();
+    let guard = engine.store().write_lock().unwrap();
+    let busy = run_cli(root, &["--state-dir", a, "index", "--json"]);
+    assert!(!busy.status.success());
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("writer busy"));
+    assert!(
+        run_cli(root, &["--state-dir", a, "status", "--json"])
+            .status
+            .success()
+    );
+    run_cli_json(root, &["--state-dir", b, "index", "--json"]);
+    drop(guard);
+    engine.index(&IndexOptions::default()).unwrap();
+
+    run_cli_json(root, &["index", "--json"]);
+    assert!(root.join(".ast-index/index.sqlite").is_file());
+    assert_eq!(
+        Engine::open(root, None).unwrap().store().path(),
+        engine.default_db()
+    );
+}
+
+#[test]
+fn state_dir_excludes_all_derived_files_and_preserves_source_denials() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let state = root.join("derived");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(root.join(".ast-index")).unwrap();
+    for name in [
+        "lib.rs",
+        "denied.rs",
+        "derived/cache.rs",
+        ".ast-index/cache.rs",
+    ] {
+        std::fs::write(root.join(name), "fn visible() {}").unwrap();
+    }
+    let state = state.to_str().unwrap();
+    let stats = run_cli_json(
+        root,
+        &[
+            "--state-dir",
+            state,
+            "index",
+            "--exclude",
+            "denied.rs",
+            "--json",
+        ],
+    );
+    assert_eq!(stats["files_indexed"], 1);
+    let results = run_cli_json(root, &["--state-dir", state, "search", "visible", "--json"]);
+    assert_eq!(results.as_array().unwrap().len(), 1);
+    assert_eq!(results[0]["file"], "lib.rs");
+    std::fs::write(root.join("derived/new.rs"), "fn hidden() {}").unwrap();
+    let freshness = run_cli_json(root, &["--state-dir", state, "freshness", "--json"]);
+    assert_eq!(freshness["state"], "fresh_at_check");
+}
+
+#[test]
+fn state_dir_environment_relative_paths_and_invalid_targets_are_explicit() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let working_directory = tempfile::tempdir().unwrap();
+    std::fs::write(root.join("lib.rs"), "fn helper() {}").unwrap();
+    let output = Command::new(binary())
+        .current_dir(working_directory.path())
+        .env_remove("AST_INDEX_DB")
+        .env("AST_INDEX_STATE_DIR", "relative-state")
+        .arg("--root")
+        .arg(root)
+        .args(["index", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let state = working_directory.path().join("relative-state");
+    assert!(state.join("index.sqlite").is_file());
+    assert!(!root.join("relative-state").exists());
+    assert!(!root.join(".ast-index").exists());
+    let empty = run_cli(root, &["--state-dir", "", "index", "--json"]);
+    assert_eq!(empty.status.code(), Some(2), "{empty:?}");
+    assert!(empty.stdout.is_empty(), "{empty:?}");
+    assert!(matches!(
+        ast_index::engine::Engine::open_state_dir(root, ""),
+        Err(ast_index::error::Error::Invalid(_))
+    ));
+    let file = root.join("not-a-directory");
+    std::fs::write(&file, "occupied").unwrap();
+    let unusable = run_cli(
+        root,
+        &["--state-dir", file.to_str().unwrap(), "index", "--json"],
+    );
+    assert_eq!(unusable.status.code(), Some(1), "{unusable:?}");
+    assert!(
+        String::from_utf8_lossy(&unusable.stderr).contains(file.to_str().unwrap()),
+        "{unusable:?}"
+    );
+    let missing = root.join("missing");
+    let conflict = run_cli(
+        root,
+        &[
+            "--state-dir",
+            missing.to_str().unwrap(),
+            "--db",
+            "other.sqlite",
+            "status",
+        ],
+    );
+    assert!(!conflict.status.success());
+    assert!(!missing.exists());
+    let proxy = run_cli(
+        root,
+        &[
+            "--state-dir",
+            missing.to_str().unwrap(),
+            "mcp",
+            "--socket",
+            "/unused",
+        ],
+    );
+    assert!(!proxy.status.success());
+    assert!(String::from_utf8_lossy(&proxy.stderr).contains("configure it on serve"));
+    assert!(!missing.exists());
+    std::os::unix::fs::symlink(&state, &missing).unwrap();
+    let redirected = run_cli(root, &["--state-dir", missing.to_str().unwrap(), "index"]);
+    assert!(!redirected.status.success());
+    assert!(String::from_utf8_lossy(&redirected.stderr).contains("symbolic link"));
+    let other_root = tempfile::tempdir().unwrap();
+    let wrong_root = run_cli(
+        other_root.path(),
+        &["--state-dir", state.to_str().unwrap(), "status", "--json"],
+    );
+    assert!(!wrong_root.status.success());
+    let linked_db = root.join("linked-db");
+    std::fs::create_dir(&linked_db).unwrap();
+    std::os::unix::fs::symlink(state.join("index.sqlite"), linked_db.join("index.sqlite")).unwrap();
+    let redirected = run_cli(root, &["--state-dir", linked_db.to_str().unwrap(), "index"]);
+    assert!(!redirected.status.success());
+    assert!(String::from_utf8_lossy(&redirected.stderr).contains("symbolic link"));
+}
+
+#[test]
+fn state_dir_stdio_and_socket_services_use_independent_snapshots() {
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let states = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut services = Vec::new();
+    for name in ["instance_a", "instance_b"] {
+        std::fs::write(root.join("lib.rs"), format!("fn {name}() {{}}")).unwrap();
+        let state = states.path().join(name);
+        let socket = states.path().join(format!("{name}.sock"));
+        let mut service = Service(
+            Command::new(binary())
+                .arg("--root")
+                .arg(root)
+                .arg("--state-dir")
+                .arg(&state)
+                .args(["serve", "--index", "--socket"])
+                .arg(&socket)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(service.0.try_wait().unwrap().is_none(), "service exited");
+            assert!(
+                Instant::now() < deadline,
+                "service did not create its socket"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        services.push(service);
+    }
+    assert!(!root.join(".ast-index").exists());
+    for (name, other) in [("instance_a", "instance_b"), ("instance_b", "instance_a")] {
+        let arguments = serde_json::json!({"action":"search","query":name,"format":"json"});
+        let state = states.path().join(name);
+        let stdio = mcp_json_args(
+            root,
+            &["--state-dir", state.to_str().unwrap()],
+            arguments.clone(),
+        );
+        assert_eq!(stdio["items"].as_array().unwrap().len(), 1);
+        assert_eq!(stdio["items"][0]["name"], name);
+        let socket = states.path().join(format!("{name}.sock"));
+        let proxy = mcp_json_args(root, &["--socket", socket.to_str().unwrap()], arguments);
+        assert_eq!(proxy, stdio);
+        let absent = mcp_json_args(
+            root,
+            &["--socket", socket.to_str().unwrap()],
+            serde_json::json!({"action":"search","query":other,"format":"json"}),
+        );
+        assert!(absent["items"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn same_named_nested_functions_keep_distinct_callers() {
     let directory = tempfile::tempdir().expect("tempdir");
     let root = directory.path();
@@ -867,17 +1119,28 @@ fn raw_json(root: &Path, args: &[&str]) -> Value {
 }
 
 fn mcp_json(root: &Path, arguments: Value) -> Value {
+    mcp_json_args(root, &[], arguments)
+}
+
+fn mcp_json_args(root: &Path, args: &[&str], arguments: Value) -> Value {
     let mut child = Command::new(binary())
         .arg("--root")
         .arg(root)
         .arg("mcp")
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let message = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code_explore","arguments":arguments}});
     writeln!(child.stdin.take().unwrap(), "{message}").unwrap();
     let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "ast-index mcp {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -1238,6 +1501,43 @@ fn cli_scip_import_and_mcp_semantic_queries_share_a_contract() {
     );
     assert_eq!(cli["items"][0]["range"], serde_json::json!([0, 3, 0, 9]));
     assert_eq!(cli["items"][0]["provenance"]["kind"], "scip");
+
+    let states = tempfile::tempdir().unwrap();
+    let first = states.path().join("first");
+    let second = states.path().join("second");
+    for state in [&first, &second] {
+        run_cli_json(
+            root,
+            &["--state-dir", state.to_str().unwrap(), "index", "--json"],
+        );
+    }
+    raw_json(
+        root,
+        &[
+            "--state-dir",
+            first.to_str().unwrap(),
+            "import-scip",
+            artifact.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let isolated = mcp_json_args(
+        root,
+        &["--state-dir", first.to_str().unwrap()],
+        serde_json::json!({"action":"semantic","relation":"definition","format":"json"}),
+    );
+    assert_eq!(isolated["items"], cli["items"]);
+    let untouched = run_cli(
+        root,
+        &[
+            "--state-dir",
+            second.to_str().unwrap(),
+            "semantic",
+            "--json",
+        ],
+    );
+    assert!(!untouched.status.success());
+    assert!(String::from_utf8_lossy(&untouched.stderr).contains("no SCIP artifact imported"));
 }
 
 #[test]

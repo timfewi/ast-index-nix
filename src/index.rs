@@ -108,8 +108,7 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
 
     stats.resolution_recomputed =
         store.meta("resolution_version")?.as_deref() != Some(&resolve::fingerprint());
-    let (candidates, mut metadata_bytes) =
-        collect_candidates(&root, store.path(), options, &mut stats)?;
+    let (candidates, mut metadata_bytes) = collect_candidates(&root, store, options, &mut stats)?;
     let go_modules = go_modules(&root, &candidates, options, &mut stats, &mut metadata_bytes)?;
     stats.resolution_recomputed |= store.meta("go_modules")?.as_deref() != Some(&go_modules);
     let existing: HashMap<String, _> = store.file_states()?.into_iter().collect();
@@ -227,7 +226,7 @@ fn record_failure(stats: &mut IndexStats, options: &IndexOptions, message: Strin
 
 fn collect_candidates(
     root: &Path,
-    database: &Path,
+    store: &Store,
     options: &IndexOptions,
     stats: &mut IndexStats,
 ) -> Result<(Vec<Candidate>, u64)> {
@@ -246,14 +245,21 @@ fn collect_candidates(
         .build()
         .map_err(|error| Error::Invalid(format!("invalid exclude patterns: {error}")))?;
 
+    let state_dir = store.state_dir().map(Path::to_path_buf);
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .parents(false)
         .require_git(false)
         .overrides(overrides)
-        .filter_entry(|entry| entry.file_name() != ".ast-index")
+        .filter_entry(move |entry| {
+            entry.file_name() != ".ast-index"
+                && state_dir
+                    .as_deref()
+                    .is_none_or(|state_dir| !entry.path().starts_with(state_dir))
+        })
         .build();
 
+    let database = store.path();
     let mut internal_paths = HashSet::from([
         database.to_path_buf(),
         database.with_extension("writer.lock"),
@@ -635,8 +641,7 @@ pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> 
         parse_error_files: 0,
         resolution_recomputed: false,
     };
-    let (candidates, mut metadata_bytes) =
-        collect_candidates(&root, store.path(), &options, &mut stats)?;
+    let (candidates, mut metadata_bytes) = collect_candidates(&root, store, &options, &mut stats)?;
     let current_go_modules = go_modules(
         &root,
         &candidates,

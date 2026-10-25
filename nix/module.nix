@@ -17,6 +17,7 @@ let
   cfg = config.services.astIndex;
   inherit (cfg) package;
   socketDirectory = builtins.dirOf cfg.socket;
+  stateDirectory = lib.removePrefix "/var/lib/" (toString cfg.stateDir);
   indexArgs = lib.optionals cfg.indexOnStart (
     [ "--index" ]
     ++ lib.concatMap (pattern: [
@@ -43,15 +44,27 @@ in
     root = lib.mkOption {
       type = lib.types.path;
       example = "/srv/ast-index/project";
-      description = "Directory to index. The index is stored in <root>/.ast-index.";
+      description = "Directory to index. Derived state defaults to <root>/.ast-index.";
+    };
+
+    stateDir = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      example = "/var/lib/ast-index/instance-a";
+      description = ''
+        Dedicated derived-state directory, or null for <root>/.ast-index.
+        Must be a normalized path below /var/lib using letters, digits, dots,
+        underscores, hyphens and slashes. Systemd creates and owns this directory
+        as the service user/group with mode 0700. The source root stays read-only.
+      '';
     };
 
     user = lib.mkOption {
       type = lib.types.str;
       default = "coding-agent";
       description = ''
-        User the service runs as. The user must exist and must own {option}`root`
-        (or at least be able to create `{root}/.ast-index`).
+        User the service runs as. The user must exist and be able to read {option}`root`.
+        Without {option}`stateDir`, it must also be able to create `{root}/.ast-index`.
       '';
     };
 
@@ -92,6 +105,18 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion =
+          cfg.stateDir == null
+          || (
+            builtins.match "/var/lib/[a-zA-Z0-9_./-]+" (toString cfg.stateDir) != null
+            && lib.all (part: part != "" && part != "." && part != "..") (lib.splitString "/" stateDirectory)
+          );
+        message = "services.astIndex.stateDir must be a normalized directory below /var/lib using letters, digits, dots, underscores, hyphens and slashes.";
+      }
+    ];
+
     environment.systemPackages = [ package ];
 
     systemd.services.ast-index = {
@@ -106,6 +131,12 @@ in
             "${package}/bin/ast-index"
             "--root"
             cfg.root
+          ]
+          ++ lib.optionals (cfg.stateDir != null) [
+            "--state-dir"
+            cfg.stateDir
+          ]
+          ++ [
             "serve"
             "--socket"
             cfg.socket
@@ -123,12 +154,16 @@ in
         ProtectSystem = "strict";
         ProtectHome = "read-only";
         ReadWritePaths = [
-          cfg.root
+          (if cfg.stateDir == null then cfg.root else cfg.stateDir)
           "${socketDirectory}"
         ];
         RestrictAddressFamilies = [ "AF_UNIX" ];
       }
-      // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; };
+      // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; }
+      // lib.optionalAttrs (cfg.stateDir != null) {
+        StateDirectory = stateDirectory;
+        StateDirectoryMode = "0700";
+      };
     };
   };
 }

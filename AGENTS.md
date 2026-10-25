@@ -54,6 +54,7 @@ the unchanged Rust implementation merely to validate prose.
 
 ## Privacy
 
-The index stores paths relative to the indexed root inside `<root>/.ast-index`
-and is gitignored. Do not commit index files, absolute host paths, credentials or
+The index stores relative source paths in `<root>/.ast-index` by default, or in
+the explicitly selected `--state-dir` / `--db` location. Keep derived state
+gitignored and private. Do not commit index files, absolute host paths, credentials or
 personal identifiers. Keep code, comments and documentation in English.

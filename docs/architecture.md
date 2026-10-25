@@ -42,6 +42,17 @@ snapshots that lack position information are marked unsuitable for comparison.
 Unknown newer schemas are rejected. An existing database is bound to its indexed
 root; selecting another root requires a separate database.
 
+`--state-dir` / `AST_INDEX_STATE_DIR` selects a dedicated directory through
+`Engine::open_state_dir` and `Store::open_state_dir`. The database, retained
+snapshots, semantic imports, freshness metadata and writer lock all use this
+store, including CLI mutations, stdio MCP and socket serving. Default callers
+still use `<root>/.ast-index/index.sqlite`; `--db` remains an explicit file
+selection and cannot be combined with the directory override. The entire
+explicit state directory is excluded from indexing and freshness scans.
+Separate paths are not an authority boundary between processes sharing a UID.
+The NixOS `stateDir` option uses systemd-owned mode-0700 state under `/var/lib`
+and leaves the source root read-only; socket/listener locks remain socket-local.
+
 Each mutation acquires an exclusive nonblocking lock beside the canonical database
 before reading update state. SQLite commits indexing atomically. Schema migration,
 indexing, explicit freshness metadata updates and SCIP ingestion use the writer

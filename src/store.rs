@@ -81,6 +81,7 @@ pub struct ImpactRow {
 pub struct Store {
     pub(crate) conn: Connection,
     path: PathBuf,
+    dedicated_state_dir: bool,
 }
 
 impl Store {
@@ -104,7 +105,11 @@ impl Store {
         let journal: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
         let path = path.canonicalize().map_err(|e| Error::io(&path, e))?;
-        let store = Self { conn, path };
+        let store = Self {
+            conn,
+            path,
+            dedicated_state_dir: false,
+        };
         let has_meta: bool = store.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
             [],
@@ -132,6 +137,36 @@ impl Store {
             })?;
         }
         Ok(store)
+    }
+
+    /// Keep the database, snapshots, journals and writer lock in one directory.
+    pub fn open_state_dir(state_dir: impl Into<PathBuf>) -> Result<Self> {
+        let state_dir = state_dir.into();
+        if state_dir.as_os_str().is_empty() {
+            return Err(Error::Invalid("state directory must not be empty".into()));
+        }
+        let database = state_dir.join(crate::engine::DB_FILE);
+        for path in [&state_dir, &database] {
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(Error::Invalid(format!(
+                    "state directory/database cannot be a symbolic link: {}",
+                    path.display()
+                )));
+            }
+        }
+        std::fs::create_dir_all(&state_dir).map_err(|e| Error::io(&state_dir, e))?;
+        let mut store = Self::open(database)?;
+        store.dedicated_state_dir = true;
+        Ok(store)
+    }
+
+    /// The entire explicit state directory is excluded from source discovery.
+    pub(crate) fn state_dir(&self) -> Option<&Path> {
+        if self.dedicated_state_dir {
+            self.path.parent()
+        } else {
+            None
+        }
     }
 
     /// One writer per canonical database path. Readers do not hold this lock.
