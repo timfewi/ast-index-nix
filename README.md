@@ -332,8 +332,8 @@ Design notes live in [docs/architecture.md](docs/architecture.md), decisions in
 [docs/requirements.md](docs/requirements.md).
 
 ```bash
-nix develop --command cargo fetch      # once, to allow --offline checks
-nix develop --command bash scripts/check fast
+devenv shell -- cargo fetch      # once, to allow --offline checks
+devenv shell -- bash scripts/check fast
 ```
 
 `scripts/check fast` runs `cargo fmt --check`, `clippy -D warnings`, the full

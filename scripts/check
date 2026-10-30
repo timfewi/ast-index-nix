@@ -8,7 +8,7 @@ case "${1:-fast}" in
     cargo test --offline
     deadnix --fail .
     statix check .
-    nixfmt --check flake.nix nix/module.nix tests/nix/module-eval.nix
+    nixfmt --check flake.nix devenv.nix nix/module.nix tests/nix/module-eval.nix
     shellcheck scripts/check
     nix flake check --all-systems --no-build --no-write-lock-file
     ;;
