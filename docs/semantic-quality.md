@@ -1,6 +1,8 @@
 # Private semantic evidence and the 90% target
 
-This is an implementation plan, not a claim that the target has been achieved.
+The position-storage foundation and Rust oracle are implemented; producers,
+semantic call overlays, TypeScript corpus and the quality gate remain planned.
+This is not a claim that the target has been achieved.
 Keep the existing offline AST engine; add locally produced semantic evidence
 through an explicit adapter. Do not train a model, upload source, or copy a
 user's repositories into a public test corpus to improve resolution.
@@ -36,9 +38,17 @@ does not establish the same recall on arbitrary projects or languages.
   implementations with producer provenance, bounded decoding, relative-path
   validation and source-snapshot checks. Producer arguments and hover text are
   not persisted. Semantic evidence currently stays separate from AST edges.
-- [Reference storage](../src/store.rs) persists a call's line but not its exact
-  token range. [Extraction](../src/parse.rs) has a byte location which is lost
-  on insertion. A line-only join would be unsafe for multiple calls on a line.
+- [Reference storage](../src/store.rs) persists zero-based half-open UTF-8
+  syntax ranges in schema 7. All extractors supply ranges; legacy rows retain
+  null until re-extraction. CLI/MCP tests cover Unicode, CRLF, nested and
+  same-line calls across eight languages. Rust generic-call extraction is
+  included; range storage alone does not establish a semantic target.
+- [The Rust oracle](../tests/quality.rs) has 101 eligible labelled call sites
+  across ten families, including a fixed control-flow family, and two explicit
+  abstention cases. Expected identities are hand-authored source labels in
+  synthetic code. The evaluator tests failed producer, recall, precision and
+  safety outcomes independently. This validates the oracle, not a producer's
+  recall. Producer answers must never replace expected labels to make it pass.
 - Import replaces the previous semantic artifact. Queries check all imported
   documents, with a 2,000-document bound; artifacts are capped at 4 MiB. This
   is not yet an incremental semantic service for an entire multi-repo workspace.

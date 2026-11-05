@@ -45,9 +45,46 @@ pub struct ParsedRef {
     pub kind: RefKind,
     pub line: u32,
     pub byte: usize,
+    /// Exact referenced syntax range: zero-based, half-open UTF-8 byte columns.
+    pub range: [u32; 4],
     /// Qualified name of the innermost enclosing definition, if any.
     pub from_symbol: Option<String>,
     pub blocked: Option<String>,
+}
+
+fn node_range(node: Node<'_>) -> [u32; 4] {
+    let start = node.start_position();
+    let end = node.end_position();
+    [
+        start.row as u32,
+        start.column as u32,
+        end.row as u32,
+        end.column as u32,
+    ]
+}
+
+/// Rust permits comments/whitespace between path tokens. Preserve syntax, not
+/// trivia, when comparing a literal path with indexed module identities.
+fn path_text(node: Node<'_>, source: &str) -> String {
+    let mut pending = vec![node];
+    let mut output = String::new();
+    while let Some(node) = pending.pop() {
+        if matches!(node.kind(), "line_comment" | "block_comment") {
+            continue;
+        }
+        if node.child_count() == 0 {
+            output.push_str(source.get(node.byte_range()).unwrap_or_default());
+        } else {
+            let mut cursor = node.walk();
+            pending.extend(
+                node.children(&mut cursor)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev(),
+            );
+        }
+    }
+    output
 }
 
 /// Everything extracted from one file.
@@ -219,10 +256,8 @@ fn extract(
                 continue;
             }
             let path = if kind == RefKind::Call {
-                path.and_then(|node| source.get(node.byte_range()))
-                    .map(str::trim)
+                path.map(|node| path_text(node, source))
                     .filter(|value| !value.is_empty())
-                    .map(str::to_string)
             } else if kind == RefKind::Import && spec.id == "rust" {
                 _node
                     .child_by_field_name("argument")
@@ -241,6 +276,7 @@ fn extract(
                 kind,
                 line: name_node.start_position().row as u32 + 1,
                 byte: name_node.start_byte(),
+                range: node_range(name_node),
                 from_symbol: None,
                 blocked,
             });

@@ -357,6 +357,7 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                         kind: RefKind::Import,
                         line: path.start_position().row as u32 + 1,
                         byte: path.start_byte(),
+                        range: super::node_range(path),
                         from_symbol: None,
                         blocked: name.is_none().then(|| "unsupported_import_literal".into()),
                     });
@@ -402,6 +403,9 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                         kind: RefKind::Call,
                         line: function.start_position().row as u32 + 1,
                         byte: function.start_byte(),
+                        range: super::node_range(
+                            function.child_by_field_name("field").unwrap_or(function),
+                        ),
                         from_symbol: owner.clone(),
                         blocked: (receiver == Some(None)).then(|| "dynamic_receiver".into()),
                     });

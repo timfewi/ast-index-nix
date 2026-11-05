@@ -136,6 +136,7 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                 kind,
                 line: target.start_position().row as u32 + 1,
                 byte: target.start_byte(),
+                range: super::node_range(target),
                 from_symbol: None,
                 blocked: blocked.map(str::to_string),
             });
@@ -180,6 +181,7 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                         kind: RefKind::Dependency,
                         line: child.start_position().row as u32 + 1,
                         byte: child.start_byte(),
+                        range: super::node_range(child),
                         from_symbol: None,
                         blocked: Some("unsupported_sql_function_body".into()),
                     });

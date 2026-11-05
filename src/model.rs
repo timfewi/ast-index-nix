@@ -181,6 +181,8 @@ pub struct Reference {
     pub name: String,
     pub kind: RefKind,
     pub line: u32,
+    /// Zero-based half-open UTF-8 byte range; absent in pre-range snapshots.
+    pub range: Option<[u32; 4]>,
     pub from_symbol: Option<String>,
     pub resolved: Option<i64>,
     pub confidence: Confidence,

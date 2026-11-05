@@ -85,6 +85,7 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                 kind: RefKind::Call,
                 line: name_node.start_position().row as u32 + 1,
                 byte: name_node.start_byte(),
+                range: super::node_range(name_node),
                 from_symbol: None,
                 blocked: literal_name
                     .is_none()
@@ -109,6 +110,7 @@ pub(super) fn extract(source: &str, root: Node<'_>) -> Result<ParsedFile> {
                     kind: RefKind::Import,
                     line: argument.unwrap_or(name_node).start_position().row as u32 + 1,
                     byte: argument.unwrap_or(name_node).start_byte(),
+                    range: super::node_range(argument.unwrap_or(name_node)),
                     from_symbol: None,
                     blocked: path.is_none().then(|| "dynamic_shell_source".into()),
                 });

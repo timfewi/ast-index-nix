@@ -558,6 +558,12 @@ impl<'s, 't> Extraction<'s, 't> {
             kind: RefKind::Call,
             line: name_node.start_position().row as u32 + 1,
             byte: name_node.start_byte(),
+            range: super::node_range(
+                name_node
+                    .child_by_field_name("field")
+                    .or_else(|| name_node.child_by_field_name("method"))
+                    .unwrap_or(name_node),
+            ),
             from_symbol: None,
             blocked: target.is_none().then(|| reason.into()),
         });
@@ -592,6 +598,7 @@ impl<'s, 't> Extraction<'s, 't> {
                 kind: RefKind::Import,
                 line: name_node.start_position().row as u32 + 1,
                 byte: name_node.start_byte(),
+                range: super::node_range(argument.unwrap_or(name_node)),
                 from_symbol: None,
                 blocked: blocked.map(str::to_string),
             });

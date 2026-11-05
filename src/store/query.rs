@@ -191,7 +191,7 @@ impl Store {
         }
         let bounds = filter.bounds(window);
         let sql = format!("SELECT r.id, f.path, r.name, r.kind, r.line, s.qualified,
-            r.resolved_symbol_id, r.confidence, r.path, r.reason
+            r.resolved_symbol_id, r.confidence, r.path, r.reason, r.source_range
             FROM refs r JOIN files f ON f.id = r.file_id LEFT JOIN symbols s ON s.id = r.from_symbol_id
             WHERE {} ORDER BY f.path, r.line, r.id {bounds}", filter.clause());
         let mut statement = self.conn.prepare(&sql)?;
@@ -204,6 +204,17 @@ impl Store {
                     kind: crate::model::RefKind::from_stored(&r.get::<_, String>(3)?)
                         .unwrap_or(crate::model::RefKind::Call),
                     line: r.get(4)?,
+                    range: r
+                        .get::<_, Option<String>>(10)?
+                        .map(|s| serde_json::from_str(&s))
+                        .transpose()
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                10,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
                     from_symbol: r.get(5)?,
                     resolved: r.get(6)?,
                     confidence: super::parse_confidence(r.get(7)?),

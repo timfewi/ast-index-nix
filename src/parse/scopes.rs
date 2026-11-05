@@ -299,7 +299,13 @@ pub(super) fn apply(
         let Some(&scope) = locations.get(&node.start_byte()) else {
             continue;
         };
-        let function = node.child_by_field_name("function");
+        let function = node.child_by_field_name("function").map(|function| {
+            if function.kind() == "generic_function" {
+                function.child_by_field_name("function").unwrap_or(function)
+            } else {
+                function
+            }
+        });
         if function.is_some_and(|n| {
             matches!(
                 n.kind(),

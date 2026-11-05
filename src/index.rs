@@ -476,6 +476,7 @@ fn index_one(
             path: reference.path.clone(),
             kind: reference.kind,
             line: reference.line,
+            range: reference.range,
             from_symbol_id: reference
                 .from_symbol
                 .as_deref()

@@ -77,6 +77,154 @@ fn binary() -> PathBuf {
 }
 
 #[test]
+fn reference_ranges_survive_cli_mcp_unicode_crlf_and_same_line_calls() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let cases = [
+        (
+            "lib.rs",
+            "fn entry() { let é = 1; first(); second(); outer(inner()); obj.method(); }\r\n",
+        ),
+        (
+            "main.ts",
+            "const é = 1; first(); second(); outer(inner()); obj.method();\r\n",
+        ),
+        (
+            "main.py",
+            "é = 1; first(); second(); outer(inner()); obj.method()\r\n",
+        ),
+        (
+            "main.go",
+            "package p\r\nfunc entry() { é := 1; first(); second(); outer(inner()); obj.method() }\r\n",
+        ),
+        (
+            "main.lua",
+            "-- é\r\nfirst(); second(); outer(inner()); obj:method()\r\n",
+        ),
+        ("main.sh", "# é\r\nfirst; second; outer; inner; method\r\n"),
+        (
+            "main.nix",
+            "# é\r\n[ (first 1) (second 2) (outer (inner 3)) (method 4) ]\r\n",
+        ),
+        (
+            "main.sql",
+            "-- é\r\nSELECT first(), second(), outer(inner()), method();\r\n",
+        ),
+    ];
+    for (file, source) in cases {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    run_cli_json(root, &["index", "--json"]);
+    for (file, source) in cases {
+        let cli = raw_json(root, &["refs", file, "--kind", "call", "--json"]);
+        assert_eq!(
+            cli,
+            mcp_json(
+                root,
+                serde_json::json!({"action":"refs", "file":file, "kind":"call", "format":"json"})
+            )
+        );
+        let rows = cli["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 5, "{file}: {rows:?}");
+        let mut positions = std::collections::HashSet::new();
+        for name in ["first", "second", "outer", "inner", "method"] {
+            let start = source
+                .find(&format!("{name}("))
+                .or_else(|| source.find(name))
+                .unwrap();
+            let prefix = &source[..start];
+            let line = prefix.bytes().filter(|&b| b == b'\n').count();
+            let column = prefix.rsplit('\n').next().unwrap().len();
+            let expected = serde_json::json!([line, column, line, column + name.len()]);
+            assert!(
+                rows.iter().any(|r| r["range"] == expected),
+                "{file}: missing {name} at {expected}: {rows:?}"
+            );
+            positions.insert(expected.to_string());
+        }
+        assert_eq!(positions.len(), 5);
+    }
+}
+
+#[test]
+fn legacy_reference_ranges_remain_unknown_until_reextraction() {
+    use ast_index::{Engine, IndexOptions, query::Query};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(root.join("lib.rs"), "fn entry() { target(); }").unwrap();
+    let engine = Engine::open(root, None).unwrap();
+    engine.index(&IndexOptions::default()).unwrap();
+    drop(engine);
+    let connection = rusqlite::Connection::open(root.join(".ast-index/index.sqlite")).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE refs DROP COLUMN source_range;
+        UPDATE meta SET value='6' WHERE key='schema_version';",
+        )
+        .unwrap();
+    drop(connection);
+    let engine = Engine::open(root, None).unwrap();
+    let query = Query {
+        action: "refs".into(),
+        ..Default::default()
+    };
+    assert!(engine.execute(&query).unwrap()["items"][0]["range"].is_null());
+    assert_eq!(
+        engine
+            .index(&IndexOptions::default())
+            .unwrap()
+            .files_indexed,
+        1
+    );
+    assert_eq!(
+        engine.execute(&query).unwrap()["items"][0]["range"],
+        serde_json::json!([0, 13, 0, 19])
+    );
+}
+
+#[test]
+fn rust_generic_calls_keep_lexical_receiver_and_literal_path_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        r#"
+fn identity<T>(v: T) -> T { v }
+mod helpers { pub fn identity<T>(v: T) -> T { v } }
+struct Counter;
+impl Counter {
+    fn step<T>(&self, v: T) -> T { v }
+    fn entry(&self) {
+        identity::<u8>(1);
+        crate::helpers:: /* trivia */ identity::<u32>(2);
+        self.step::<bool>(true);
+    }
+}
+fn dynamic(value: Unknown) { value.step::<u8>(1); }
+"#,
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+    let calls = run_cli_json(root, &["callees", "Counter::entry", "--json"]);
+    let targets: std::collections::BTreeSet<_> = calls
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["callee"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        targets,
+        std::collections::BTreeSet::from(["identity", "helpers::identity", "Counter::step"])
+    );
+    assert!(
+        run_cli_json(root, &["callees", "dynamic", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn explicit_imports_resolve_without_guessing_shadowed_or_dynamic_targets() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

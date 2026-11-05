@@ -168,6 +168,13 @@ queries support an exact file filter and an optional symbol or display name.
 
 ## Coverage and freshness
 
+`refs` includes `range: [start_line, start_column, end_line, end_column]` for
+the referenced syntax. Ranges are zero-based, half-open and use UTF-8 byte
+columns; the existing `line` field stays one-based. Legacy database rows return
+`range: null` until reindexing, never a position guessed from a line number.
+Rust calls with explicit type arguments are included, and path comments do not
+change their literal module identity.
+
 `status` reports `reference_coverage` separately by language and reference kind,
 including linked counts and unresolved reasons. `status --nice` displays these
 rates and the three largest unresolved categories per row. Imports link to

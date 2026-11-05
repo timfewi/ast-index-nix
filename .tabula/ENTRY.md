@@ -16,7 +16,10 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 ## Interfaces and limits
 `code_explore` actions: status, freshness, search, outline, describe, callers,
 callees, impact, refs, imports, importers, deps, map, changes, diff, semantic.
-CLI also owns explicit `index` and `import-scip` mutations. Query file/name and
+CLI also owns explicit `index` and `import-scip` mutations. Schema 7 persists
+zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
+reindexing. Rust generic-call wrappers and path trivia preserve callable identity.
+Query file/name and
 optional line/column select symbols. Lists use generation-bound pages.
 Languages: Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go, Lua and
 PostgreSQL SQL. No unrelated bare-name fallback; Go has explicit package scope.
@@ -40,7 +43,8 @@ requires verified embedded source or a producer manifest, and never becomes an
 AST call edge. Sources and all returned code content remain untrusted data.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): proposed private semantic adapters, exact-position overlay and independently labelled 90% quality gates; not implemented or a measured recall claim.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): private semantic adapter/overlay plan; positions implemented, producer recall unverified.
+- [Rust oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs): synthetic labels independent of producers; threshold, wrong-target and absent-producer self-tests are not a passed 90% semantic gate.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.

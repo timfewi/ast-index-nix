@@ -1,0 +1,57 @@
+//! Synthetic resolution quality oracle. Producer integration is added alongside
+//! the semantic adapters; these tests verify that its scorer cannot hide gaps.
+#[path = "quality/evaluator.rs"]
+mod evaluator;
+
+const RUST_CORPUS: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        include_str!("quality/fixtures/rust/src/lib.rs"),
+    ),
+    (
+        "src/ops.rs",
+        include_str!("quality/fixtures/rust/src/ops.rs"),
+    ),
+];
+
+#[test]
+fn rust_gold_labels_cover_distinct_calls_and_negative_cases() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let cases = evaluator::parse(RUST_CORPUS).unwrap();
+    assert_eq!(cases.iter().filter(|c| c.expected.is_some()).count(), 101);
+    assert_eq!(cases.iter().filter(|c| c.expected.is_none()).count(), 2);
+    let mut families = BTreeMap::<_, usize>::new();
+    for case in &cases {
+        *families.entry(&case.family).or_default() += 1;
+    }
+    assert_eq!(families.len(), 11);
+    assert_eq!(families.get(&"heldout".to_string()), Some(&10));
+    let labelled: BTreeSet<_> = cases.iter().map(|c| c.site.clone()).collect();
+    let mut extracted = BTreeSet::new();
+    for (file, source) in RUST_CORPUS {
+        let parsed =
+            ast_index::parse::parse(source, ast_index::lang::by_id("rust").unwrap()).unwrap();
+        assert!(!parsed.has_errors, "{file}");
+        for reference in parsed
+            .refs
+            .into_iter()
+            .filter(|r| r.kind == ast_index::model::RefKind::Call)
+        {
+            extracted.insert(evaluator::Location {
+                file: (*file).into(),
+                range: reference.range,
+            });
+        }
+    }
+    assert!(
+        labelled == extracted,
+        "missing labels: {:?}; missing extraction: {:?}",
+        extracted.difference(&labelled).collect::<Vec<_>>(),
+        cases
+            .iter()
+            .filter(|c| !extracted.contains(&c.site))
+            .map(|c| &c.id)
+            .collect::<Vec<_>>()
+    );
+    assert!(!evaluator::score(&cases, &evaluator::Observations::new()).passes());
+}

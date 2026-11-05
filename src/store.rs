@@ -15,7 +15,7 @@ mod history;
 mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +264,7 @@ impl Store {
             ("refs", "blocked", "TEXT"),
             ("refs", "import_target", "TEXT"),
             ("refs", "reason", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("refs", "source_range", "TEXT"),
         ] {
             let mut statement = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
             let names: Vec<String> = statement
@@ -273,6 +274,10 @@ impl Store {
                 self.conn.execute_batch(&format!(
                     "ALTER TABLE {table} ADD COLUMN {column} {definition}"
                 ))?;
+                if table == "refs" && column == "source_range" {
+                    // Old line numbers cannot establish exact token positions.
+                    self.conn.execute("UPDATE files SET fingerprint = ''", [])?;
+                }
             }
         }
         self.conn.execute_batch(
@@ -518,8 +523,8 @@ impl Store {
         let mut statement = self.conn.prepare(
             "INSERT INTO refs(
                 file_id, name, name_lower, path, kind, line, from_symbol_id,
-                resolved_symbol_id, confidence, blocked, reason
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, COALESCE(?9, 'unknown'))",
+                resolved_symbol_id, confidence, blocked, reason, source_range
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, COALESCE(?9, 'unknown'), ?10)",
         )?;
         for reference in refs {
             statement.execute(params![
@@ -532,6 +537,7 @@ impl Store {
                 reference.from_symbol_id,
                 reference.confidence.as_str(),
                 reference.blocked,
+                serde_json::to_string(&reference.range)?,
             ])?;
         }
         Ok(())
@@ -809,6 +815,7 @@ pub struct RefInsert {
     pub path: Option<String>,
     pub kind: RefKind,
     pub line: u32,
+    pub range: [u32; 4],
     pub from_symbol_id: Option<i64>,
     pub confidence: Confidence,
     pub blocked: Option<String>,
@@ -902,7 +909,8 @@ mod tests {
             CREATE TABLE symbols(id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,name TEXT NOT NULL,name_lower TEXT NOT NULL,qualified TEXT NOT NULL,qualified_lower TEXT NOT NULL,kind TEXT NOT NULL,start_line INTEGER NOT NULL,end_line INTEGER NOT NULL,parent TEXT);
             CREATE TABLE refs(id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,name TEXT NOT NULL,name_lower TEXT NOT NULL,path TEXT,kind TEXT NOT NULL,line INTEGER NOT NULL,from_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,resolved_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,confidence TEXT NOT NULL);
             INSERT INTO files VALUES(1,'lib.rs','rust',14,0,'legacy-hash');
-            INSERT INTO symbols VALUES(1,1,'helper','helper','helper','helper','function',1,1,NULL);"
+            INSERT INTO symbols VALUES(1,1,'helper','helper','helper','helper','function',1,1,NULL);
+            INSERT INTO refs VALUES(1,1,'helper','helper',NULL,'call',1,NULL,NULL,'none');"
         ).unwrap();
         drop(connection);
         let store = Store::open(&path).unwrap();
@@ -924,6 +932,18 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "helper");
         assert_eq!(symbols[0].start_column, 1);
+        let query = crate::query::Query {
+            action: "refs".into(),
+            ..Default::default()
+        };
+        let refs = store
+            .select_refs(&query, &query.window(0).unwrap())
+            .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].range, None,
+            "migration must not invent token positions"
+        );
         drop(store);
         assert!(Store::open(path).is_ok());
     }

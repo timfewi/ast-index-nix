@@ -62,6 +62,13 @@ consistent SQLite transactions. WAL is requested; SQLite errors remain visible.
 
 ## Resolution and confidence
 
+Reference ranges are zero-based, half-open UTF-8 byte coordinates, persisted in
+schema version 7 alongside the existing one-based line. All extractors provide
+syntax ranges; named receiver calls select the member token. Migration leaves
+old ranges null and invalidates extraction fingerprints, requiring reindexing.
+Rust generic-function wrappers preserve the underlying callable and receiver;
+comments between path tokens are excluded from static module identities.
+
 Bare names must have supported lexical bindings. Parameters, assignments and
 unsupported imports block fallback. JS/TS reassignment invalidates the affected
 lexical binding, and `var` uses function scope. Rust module scopes and class/impl

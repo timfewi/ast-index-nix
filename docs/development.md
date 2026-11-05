@@ -6,12 +6,12 @@ Bash/Shell, Go, Lua and PostgreSQL-oriented SQL support is implemented through
 the existing CLI/MCP query engine. Language adapters live in
 `src/parse/{bash,go,lua,sql}.rs`; Go package resolution is in `src/resolve/go.rs`.
 Shared changes cover shebang detection, bounded and hashed `go.mod` metadata,
-imports, extraction/resolution fingerprints, schema version 6 and SQL
+imports, extraction/resolution fingerprints, schema version 7 and SQL
 `dependency` references separate from call edges. Astro and embedded shell/SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-69 unit and 53 integration tests, formatting, Clippy (`-D warnings`), deadnix,
+69 unit, 56 integration and 3 quality-oracle tests, formatting, Clippy (`-D warnings`), deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
 order/builtin shadowing, Lua mutation, SQL namespaces/CTEs/owners, shared read
@@ -23,6 +23,12 @@ import identity. The regression fails with the previous extractor and checks
 exact targets and conservative negative cases with the new one. Status separates
 link coverage by language and reference kind, including unresolved reasons;
 CLI and MCP JSON agree. These counts are not semantic recall or accuracy.
+
+Schema 7 persists exact reference ranges and re-extracts legacy rows. The Rust
+quality corpus freezes 101 eligible calls plus two abstention cases; its oracle
+tests verify accounting and failure thresholds, not achieved semantic recall.
+The corpus also typechecks offline without dependencies. Generic-call and
+commented-path regressions preserve explicit receivers and lexical resolution.
 
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining

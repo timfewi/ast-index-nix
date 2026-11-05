@@ -209,6 +209,9 @@ const RUST_TAGS: &str = r#"
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call
 (call_expression function: (scoped_identifier name: (identifier) @name) @path) @reference.call
+(call_expression function: (generic_function function: (identifier) @name)) @reference.call
+(call_expression function: (generic_function function: (scoped_identifier name: (identifier) @name) @path)) @reference.call
+(call_expression function: (generic_function function: (field_expression field: (field_identifier) @name))) @reference.call
 (use_declaration argument: (_) @name) @reference.import
 "#;
 

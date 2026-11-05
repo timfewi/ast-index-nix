@@ -381,6 +381,7 @@ mod tests {
                             path: None,
                             kind: crate::model::RefKind::Import,
                             line: 1,
+                            range: [0, 7, 0, 25],
                             from_symbol_id: None,
                             confidence: crate::model::Confidence::None,
                             blocked: None,

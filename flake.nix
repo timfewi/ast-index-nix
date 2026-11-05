@@ -23,6 +23,8 @@
               ./Cargo.lock
               ./src
               ./tests/integration.rs
+              ./tests/quality.rs
+              ./tests/quality
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
