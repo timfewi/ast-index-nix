@@ -41,6 +41,7 @@ pub(crate) fn fingerprint() -> String {
     let mut hash = blake3::Hasher::new();
     hash.update(include_bytes!("calls.rs"));
     hash.update(include_bytes!("../producer.rs"));
+    hash.update(include_bytes!("../producer/inputs.rs"));
     hash.update(include_bytes!("../producer/typescript.rs"));
     hash.update(include_bytes!("calls/typescript.rs"));
     for language in ["rust", "typescript", "tsx"] {
@@ -145,13 +146,9 @@ pub(super) fn build(
     documents: &[(wire::Document, String)],
     tool: &wire::ToolInfo,
     digest: &str,
-    inputs: Option<&std::collections::HashMap<String, String>>,
+    inputs: &std::collections::HashMap<String, String>,
 ) -> Result<Vec<Call>> {
-    // A producer/version outside an exercised profile remains navigable as raw
-    // semantic evidence but cannot change the call graph.
-    if profile(tool).is_none() {
-        return Ok(Vec::new());
-    }
+    // The importer admits only exercised profiles with a complete inventory.
     let typescript = tool.name == "typescript-lsp";
     let supported_language = |language: &str| {
         if typescript {
@@ -165,14 +162,12 @@ pub(super) fn build(
     let mut sites = BTreeMap::<(String, [u32; 4]), BTreeSet<String>>::new();
     let mut malformed = BTreeSet::new();
     let mut profile_files = BTreeSet::new();
-    if let Some(inputs) = inputs {
-        for file in inputs.keys() {
-            if store
-                .file_state(file)?
-                .is_some_and(|state| supported_language(&state.lang))
-            {
-                profile_files.insert(file.clone());
-            }
+    for file in inputs.keys() {
+        if store
+            .file_state(file)?
+            .is_some_and(|state| supported_language(&state.lang))
+        {
+            profile_files.insert(file.clone());
         }
     }
     let mut budget = SOURCE_BYTES;
@@ -442,6 +437,8 @@ mod tests {
 
     fn fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, Engine) {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(dir.path().join("Cargo.lock"), "version=4\n").unwrap();
         for (file, text) in files {
             let path = dir.path().join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -508,8 +505,21 @@ mod tests {
             documents,
         };
         let artifact = engine.root().join("fixture.scip");
-        std::fs::write(&artifact, index.encode_to_vec()).unwrap();
-        super::super::import(engine.root(), engine.store(), &artifact, None).unwrap();
+        let bytes = index.encode_to_vec();
+        std::fs::write(&artifact, &bytes).unwrap();
+        let inventory: crate::producer::Inventory = serde_json::from_value(
+            json!({"version":1,"profile":"rust","options":{"dependencies":false}}),
+        )
+        .unwrap();
+        let files = inventory
+            .hashes(
+                engine.root(),
+                engine.store().state_dir().unwrap_or(engine.store().path()),
+            )
+            .unwrap();
+        let manifest = engine.root().join("fixture.manifest.json");
+        std::fs::write(&manifest, serde_json::to_vec(&json!({"artifact_blake3":blake3::hash(&bytes).to_hex().to_string(),"files":files,"inventory":inventory})).unwrap()).unwrap();
+        super::super::import(engine.root(), engine.store(), &artifact, Some(&manifest)).unwrap();
     }
 
     fn request(action: &str, name: Option<&str>) -> Query {
@@ -720,6 +730,77 @@ mod tests {
             "2026-09-21",
         );
         assert!(engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_null());
+    }
+
+    #[test]
+    fn complete_inventory_supports_a_custom_database_inside_the_project() {
+        let text = "fn target() {}\nfn caller() {target();}\n";
+        let (directory, original) = fixture(&[("lib.rs", text)]);
+        drop(original);
+        // A file override excludes this file, not its entire parent project.
+        // Its misleading extension must not turn database bytes into input.
+        let engine =
+            Engine::open(directory.path(), Some(directory.path().join("runtime.rs"))).unwrap();
+        engine.index(&IndexOptions::default()).unwrap();
+        import(
+            &engine,
+            vec![document(
+                "lib.rs",
+                text,
+                1,
+                vec![
+                    occurrence(text, "target", 0, "target", true, 1),
+                    occurrence(text, "target", 1, "target", false, 1),
+                ],
+            )],
+            "2026-09-21",
+        );
+        assert!(
+            engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_number()
+        );
+        std::fs::write(directory.path().join("added.rs"), "fn added() {}\n").unwrap();
+        assert!(engine.execute(&request("refs", None)).is_err());
+    }
+
+    #[test]
+    fn legacy_import_clears_inventory_and_cannot_enable_combined_calls() {
+        let text = "fn target() {}\nfn caller() {target();}\n";
+        let (_directory, engine) = fixture(&[("lib.rs", text)]);
+        import(
+            &engine,
+            vec![document(
+                "lib.rs",
+                text,
+                1,
+                vec![
+                    occurrence(text, "target", 0, "target", true, 1),
+                    occurrence(text, "target", 1, "target", false, 1),
+                ],
+            )],
+            "2026-09-21",
+        );
+        assert!(
+            engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_number()
+        );
+        super::super::import(
+            engine.root(),
+            engine.store(),
+            &engine.root().join("fixture.scip"),
+            None,
+        )
+        .unwrap();
+        assert!(
+            engine.execute(&request("refs", None)).is_err(),
+            "listed/embedded documents alone do not establish complete input freshness"
+        );
+        let raw = engine
+            .execute(&Query {
+                action: "semantic".into(),
+                relation: Some("reference".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(raw["items"].as_array().unwrap().len(), 1);
     }
 
     #[test]

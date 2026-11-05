@@ -93,8 +93,10 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 The proposed implementation sequence and privacy boundary are in
 [semantic-quality.md](semantic-quality.md). Positions, synthetic corpora and the
 offline Rust/TypeScript runners and opt-in validated calls are implemented. Both
-frozen corpora pass the recall/precision gate; general project dependency
-provisioning and host refresh integration remain open. A producer smoke alone
+frozen corpora pass the recall/precision gate. Explicit regular project-local
+dependency inputs and inventory freshness have runtime tests; per-project/profile
+refresh and host integration remain open. External caches, custom Cargo config,
+Git/private registries and symlinked dependency trees remain unsupported. A producer smoke alone
 does not establish accuracy, and the corpus result is not an arbitrary-project claim.
 The TypeScript adapter passes definition navigation and, separately, static-call
 acceptance for all 100 labelled eligible sites; mutation/escape cases abstain.

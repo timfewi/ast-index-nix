@@ -21,10 +21,11 @@ requests, project execution, package discovery commands or Nix evaluation.
   validation, snapshot-consistent queries and compact text output.
 - `scip.rs`, `scip/wire.rs`, `scip/calls.rs`: bounded semantic-artifact ingestion
   and an opt-in validated call overlay, separate from the unchanged AST graph.
-- `producer.rs`, `producer/typescript.rs`: explicit shared private snapshots and
+- `producer.rs`, `producer/inputs.rs`, `producer/typescript.rs`: explicit shared private snapshots and
   offline sandbox commands; Rust SCIP and native TypeScript LSP adapters. Neither
-  adapter is invoked by a query. TypeScript definitions remain raw evidence until
-  a separate static-dispatch profile is validated.
+  adapter is invoked by a query. The shared input policy is reused for bounded
+  query-time inventory comparison. TypeScript call admission is owned by
+  `scip/calls/typescript.rs`; definitions alone are not dispatch proof.
 - `main.rs`, `rpc.rs`, `serve.rs`: transport adaptation, protocol negotiation,
   bounded framing, socket ownership and byte-preserving proxy.
 
@@ -165,7 +166,12 @@ is validated as local metadata and is never followed.
 Embedded text or an artifact-bound producer manifest must establish source hashes.
 All participating source bytes and supplied manifest inputs (including project
 configuration/locks) are rechecked on semantic queries; a changed or missing
-input excludes the artifact's results. Producer names, versions and
+input excludes the artifact's results. Explicit runner manifests additionally
+contain a versioned selection policy (language and dependency opt-in, no external
+paths). Import validates the full inventory; queries also detect additions.
+Legacy manifests without this policy check only declared files and cannot enable
+combined call edges. Selected
+project/dependency inputs share one file/byte/traversal budget. Producer names, versions and
 artifact digests remain attached to semantic evidence. Arguments and documentation
 from producer metadata are not persisted. Implementation relationships require
 the explicit SCIP flag. The combined graph additionally requires a current call

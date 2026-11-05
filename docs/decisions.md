@@ -160,7 +160,19 @@ loading, so the package applies two fail-if-missing source replacements disablin
 those paths. Editor settings alone are insufficient. The original upstream checks
 remain enabled. Custom Cargo configuration and unavailable offline dependencies
 fail closed; no installer or network fallback runs. Snapshot manifests include
-configuration/locks, and raw artifacts are removed after import.
+configuration/locks, and raw artifacts are removed after import. Explicit
+`--with-dependencies` uses regular project-local `vendor/` or `node_modules/`
+inputs, not a discovered home cache. Cargo receives only fixed runner-owned
+crates.io source replacement in the private snapshot. TypeScript dependency
+declarations enable checking but never become internal call targets.
+
+Checking only hashes of previously known files misses newly selected inputs.
+Runner manifests therefore carry a versioned, bounded inventory policy with no
+external path fields. Import and semantic queries reuse the same input selection
+and shared project/dependency budgets; additions, changes and deletions invalidate
+the result. Legacy manually supplied manifests retain listed-file validation
+for raw navigation; combined calls require a validated complete inventory.
+This does not execute a producer during a query or claim freshness after the read.
 
 The TypeScript adapter uses the already pinned native compiler's LSP rather than
 adding an npm installer or assuming the old JavaScript compiler API still exists.

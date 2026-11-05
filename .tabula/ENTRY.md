@@ -11,7 +11,7 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/store.rs](../src/store.rs), [src/store/query.rs](../src/store/query.rs), [src/store/history.rs](../src/store/history.rs): additive schema, writer lock, SQL projections, bounded traversal and two structural snapshots.
 - [src/query.rs](../src/query.rs), [src/engine.rs](../src/engine.rs), [src/report.rs](../src/report.rs): shared contracts, validation, cursors and text.
 - [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs), [src/scip/calls.rs](../src/scip/calls.rs), [src/scip/calls/typescript.rs](../src/scip/calls/typescript.rs): local SCIP import, source verification and independent Rust/TypeScript static-call overlays.
-- [src/producer.rs](../src/producer.rs), [src/producer/typescript.rs](../src/producer/typescript.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private snapshots, offline per-producer tool closures, patched Rust SCIP and native TypeScript LSP; no invocation from queries.
+- [src/producer.rs](../src/producer.rs), [src/producer/inputs.rs](../src/producer/inputs.rs), [src/producer/typescript.rs](../src/producer/typescript.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private snapshots, shared bounded input inventories, opt-in regular vendor/node_modules trees, offline tool closures, patched Rust SCIP and native TypeScript LSP; no producer invocation from queries.
 - [src/main.rs](../src/main.rs), [src/rpc.rs](../src/rpc.rs), [src/serve.rs](../src/serve.rs): CLI, single-tool MCP and socket/proxy adapters.
 
 ## Interfaces and limits
@@ -50,11 +50,16 @@ callers/callees/impact; AST remains default and unchanged. Conflicts, trait disp
 attribute macros and ambiguity abstain. Source/config, AST generation and
 validator/runner fingerprint changes require refresh. Sources and returned code
 remain untrusted data.
+Runner manifests additionally detect selected-input additions/deletions with the
+same inventory policy and shared source/dependency limits. Legacy listed-file
+manifests only recheck their declared inputs and cannot enable combined calls;
+no freshness guarantee persists
+after a query returns.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust/TypeScript acceptance and remaining dependency/host integration work.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust/TypeScript/dependency acceptance and remaining per-project/profile refresh and host integration work.
 - [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[acceptance](../tests/quality/acceptance.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent labels; Rust combined passes 101/101 with no wrong targets and two abstentions; TypeScript passes 100/100 with three abstentions. Neither is an arbitrary-project guarantee.
-- [Producer smoke](../tests/producer.rs)/[TypeScript safety](../tests/producer/typescript.rs): real offline Rust/TypeScript import, build-script canary, temporary artifact cleanup, UTF-8/CRLF, TSX and lockfile invalidation. Isolated mutation/escape/decorator/constructor cases abstain. Dependency provisioning remains open.
+- [Producer smoke](../tests/producer.rs)/[TypeScript safety](../tests/producer/typescript.rs)/[dependency acceptance](../tests/producer/dependencies.rs): real offline Rust/TypeScript import, project/dependency build-script canaries, temporary cleanup, UTF-8/CRLF, TSX, lockfile and complete-inventory invalidation. Isolated mutation/escape/decorator/constructor cases abstain. External caches and symlinked dependency layouts remain unsupported.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.

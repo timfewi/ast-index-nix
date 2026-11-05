@@ -148,7 +148,7 @@ fn rust_combined_profile_meets_independent_recall_precision_and_safety_gate() {
     .unwrap();
     let state = directory.path().join("state");
     // The explicit runner creates private state before native indexing.
-    ast_index::producer::rust(&root, &state).unwrap();
+    ast_index::producer::rust(&root, &state, &Default::default()).unwrap();
     let engine = Engine::open_state_dir(&root, &state).unwrap();
     let cases = evaluator::parse(RUST_CORPUS).unwrap();
     let baseline_rows = references(&engine, "ast");
@@ -201,7 +201,7 @@ fn typescript_combined_profile_meets_independent_recall_precision_and_safety_gat
     )
     .unwrap();
     let state = directory.path().join("state");
-    ast_index::producer::typescript(&root, &state).unwrap();
+    ast_index::producer::typescript(&root, &state, &Default::default()).unwrap();
     let engine = Engine::open_state_dir(&root, &state).unwrap();
     let cases = evaluator::parse(TYPESCRIPT_CORPUS).unwrap();
     let mut observed = Observations::new();

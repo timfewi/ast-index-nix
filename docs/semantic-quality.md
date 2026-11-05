@@ -2,8 +2,9 @@
 
 Exact positions, independent Rust/TypeScript corpora, explicit offline Rust and
 TypeScript producers and validated call overlays are implemented. Both profiles
-pass their frozen synthetic corpora;
-dependency provisioning and host refresh integration remain open. This does not
+pass their frozen synthetic corpora. Explicit project-local dependency input and
+complete input-inventory freshness are implemented; per-project/profile refresh
+and host integration remain open. This does not
 establish the target on arbitrary projects, other languages or the full plan.
 Keep the existing offline AST engine; add locally produced semantic evidence
 through an explicit adapter. Do not train a model, upload source, or copy a
@@ -65,8 +66,9 @@ does not establish the same recall on arbitrary projects or languages.
   LSP settings do not disable those hardcoded CLI paths in this producer version.
   An executable synthetic build-script canary, real SCIP import, temporary-output
   cleanup and lockfile invalidation pass. Custom Cargo configuration and missing
-  offline dependencies fail explicitly. Dependency-cache provisioning remains
-  unimplemented. The producer smoke alone is not an
+  offline dependencies fail explicitly. An explicit flag enables an already
+  prepared project-local crates.io vendor directory with runner-owned source
+  replacement in the private snapshot. The producer smoke alone is not an
   accuracy result; the independent end-to-end acceptance below supplies that.
 - [The TypeScript adapter](../src/producer/typescript.rs) uses the pinned native
   TypeScript 7.0.2 LSP, not a JavaScript compiler API or installed project plugin.
@@ -105,7 +107,11 @@ does not establish the same recall on arbitrary projects or languages.
   old definition-only artifacts; those remain raw navigation evidence only.
 - Import replaces the previous semantic artifact. Queries check all imported
   documents and supplied configuration/lock inputs, with a combined 2,000-file
-  bound; artifacts are capped at 4 MiB. This
+  bound; artifacts are capped at 4 MiB. Runner manifests also record the bounded
+  input-selection policy. Queries compare the complete selected inventory,
+  detecting new files as well as changed/deleted inputs. Legacy listed-file
+  manifests keep their original freshness scope and cannot enable combined
+  call edges. This
   is not yet an incremental semantic service for an entire multi-repo workspace.
 - A local synthetic Rust smoke using rust-analyzer 2026-09-21 produced SCIP for
   `value.tick()` where `value: &Counter`. AST resolution abstained; SCIP attached
@@ -181,6 +187,30 @@ compatibility also have regressions. The result applies to this closed project
 snapshot and named profile, not arbitrary runtime mutation or other languages.
 The independent AST link count stays at 37 of 103 calls and five of five imports
 (42/108 overall, about 38.9%); it is not the combined profile's accuracy score.
+
+## Executed offline dependency acceptance
+
+`--with-dependencies` selects an existing project-local `vendor/` for Rust or
+`node_modules/` for TypeScript. The same input policy governs snapshot creation,
+import validation and query freshness. It never selects arbitrary paths from
+artifact metadata. The normal 2,000-file, 128-MiB, 2-MiB/file and bounded traversal
+limits are shared by project and dependencies. Symlinked trees, missing inputs
+and unsupported configuration fail visibly; no installer or global cache scan runs.
+
+[Real producer tests](../tests/producer/dependencies.rs) use authored local
+dependency trees. Rust with Cargo 1.98.0 resolves a vendored registry dependency
+with pinned lock/checksum metadata while a dependency build-script canary stays
+unexecuted. TypeScript 7.0.2 loads dependency declarations, keeps external calls
+unresolved and does not execute JavaScript/package scripts. Both fail without
+explicit dependency selection and preserve a prior valid index on failed refresh.
+Changed dependency bytes and newly added source/dependency files invalidate old
+evidence; the added-source regression failed before the inventory fix. Input
+tests cover private-file exclusion, symlinks, policy versions and the shared cap.
+
+These profiles support regular project-local trees. Custom Cargo configuration,
+Git/private registries, external/home caches and symlinked package layouts remain
+unsupported. The dependency tests establish this data path and its bounds, not
+a new recall percentage or arbitrary dependency/runtime compatibility.
 
 ## Implementation order and exit criteria
 

@@ -10,57 +10,12 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_FILES: usize = 2000;
-const MAX_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_FILE: u64 = 2 * 1024 * 1024;
-
+mod inputs;
 mod typescript;
+pub(crate) use inputs::Inventory;
+pub use inputs::Options;
+use inputs::Profile;
 pub use typescript::typescript;
-
-#[derive(Clone, Copy)]
-enum Profile {
-    Rust,
-    TypeScript,
-}
-
-impl Profile {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-            Self::TypeScript => "typescript",
-        }
-    }
-
-    fn manifest(self) -> &'static str {
-        match self {
-            Self::Rust => "Cargo.toml",
-            Self::TypeScript => "tsconfig.json",
-        }
-    }
-
-    fn selects(self, path: &Path) -> bool {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        match self {
-            Self::Rust => {
-                path.extension().is_some_and(|e| e == "rs")
-                    || matches!(name, "Cargo.toml" | "Cargo.lock")
-            }
-            Self::TypeScript => {
-                crate::lang::detect(path).is_some_and(|s| matches!(s.id, "typescript" | "tsx"))
-                    || (name.starts_with("tsconfig") && name.ends_with(".json"))
-                    || matches!(
-                        name,
-                        "package.json"
-                            | "package-lock.json"
-                            | "npm-shrinkwrap.json"
-                            | "pnpm-lock.yaml"
-                            | "yarn.lock"
-                            | "bun.lock"
-                    )
-            }
-        }
-    }
-}
 
 fn private_directory(path: &Path) -> Result<()> {
     // Do not chmod an existing directory or follow an output symlink.
@@ -109,80 +64,6 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Inputs are bounded and selected by language/configuration, not by arbitrary
-/// files in the project. A second full inventory detects additions/deletions.
-fn inputs(root: &Path, excluded: &Path, profile: Profile) -> Result<BTreeMap<String, Vec<u8>>> {
-    ensure!(
-        root.join(profile.manifest()).is_file(),
-        "{} profile needs {}",
-        profile.name(),
-        profile.manifest()
-    );
-    let mut files = BTreeMap::new();
-    let mut total = 0;
-    let started = std::time::Instant::now();
-    let walk = ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .git_global(false)
-        .follow_links(false)
-        .filter_entry({
-            let excluded = excluded.to_path_buf();
-            move |e| {
-                e.path() != excluded
-                    && !matches!(
-                        e.file_name().to_str(),
-                        Some("target" | "node_modules" | ".git" | ".ast-index")
-                    )
-            }
-        })
-        .build();
-    for (visited, entry) in walk.enumerate() {
-        ensure!(
-            visited < 50_000 && started.elapsed().as_secs() < 30,
-            "snapshot traversal budget exceeded"
-        );
-        let entry = entry?;
-        if entry.file_type().is_some_and(|t| t.is_dir()) {
-            // Cargo configuration can replace compiler executables. This first
-            // profile rejects it rather than silently ignoring its semantics.
-            ensure!(
-                !matches!(profile, Profile::Rust)
-                    || (!entry.path().join(".cargo/config").exists()
-                        && !entry.path().join(".cargo/config.toml").exists()),
-                "custom Cargo configuration is not supported by the offline Rust profile"
-            );
-            continue;
-        }
-        let path = entry.path();
-        if !profile.selects(path) {
-            continue;
-        }
-        ensure!(files.len() < MAX_FILES, "snapshot file budget exceeded");
-        let relative = path
-            .strip_prefix(root)?
-            .to_str()
-            .context("non UTF-8 source path")?;
-        ensure!(relative.len() <= 4096, "snapshot path budget exceeded");
-        ensure!(
-            !matches!(profile, Profile::TypeScript) || !relative.chars().any(char::is_control),
-            "TypeScript snapshot paths must not contain control characters"
-        );
-        ensure!(
-            path.canonicalize()? == path,
-            "snapshot input path contains a symbolic link"
-        );
-        let bytes = crate::index::read_source(root, path, MAX_FILE.min(MAX_BYTES - total))?;
-        total += bytes.len() as u64;
-        files.insert(relative.to_owned(), bytes);
-    }
-    ensure!(
-        files.contains_key(profile.manifest())
-            && (!matches!(profile, Profile::Rust) || files.contains_key("Cargo.lock")),
-        "offline profile requires its included root manifest and Rust Cargo.lock"
-    );
-    Ok(files)
-}
-
 fn configured(name: &str) -> Result<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
@@ -194,7 +75,7 @@ fn configured(name: &str) -> Result<PathBuf> {
 struct Snapshot {
     root: PathBuf,
     state: PathBuf,
-    profile: Profile,
+    inventory: Inventory,
     files: BTreeMap<String, Vec<u8>>,
     _temporary: tempfile::TempDir,
     project: PathBuf,
@@ -202,7 +83,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn new(root: &Path, state: &Path, profile: Profile) -> Result<Self> {
+    fn new(root: &Path, state: &Path, profile: Profile, options: &Options) -> Result<Self> {
         let root = root.canonicalize()?;
         private_directory(state)?;
         let state = state.canonicalize()?;
@@ -210,7 +91,8 @@ impl Snapshot {
             state != root && !root.starts_with(&state),
             "runtime state must not contain the project"
         );
-        let files = inputs(&root, &state, profile)?;
+        let inventory = Inventory::new(profile, options);
+        let files = inventory.capture(&root, &state)?;
         let temporary = tempfile::Builder::new()
             .prefix(&format!("semantic-{}-", profile.name()))
             .tempdir_in(&state)?;
@@ -228,10 +110,17 @@ impl Snapshot {
             }
             write(&path, bytes)?;
         }
+        if options.dependencies && matches!(profile, Profile::Rust) {
+            let configuration = project.join(".cargo");
+            private_directory(&configuration)?;
+            // Fixed runner-owned configuration; project Cargo configuration is
+            // still rejected. Nothing is written to the original checkout.
+            write(&configuration.join("config.toml"), b"[source.crates-io]\nreplace-with = 'ast-index-vendor'\n[source.ast-index-vendor]\ndirectory = '/project/vendor'\n")?;
+        }
         Ok(Self {
             root,
             state,
-            profile,
+            inventory,
             files,
             _temporary: temporary,
             project,
@@ -302,7 +191,7 @@ impl Snapshot {
             outputs.len() == 1 && outputs[0].file_name() == "index.scip",
             "producer wrote unexpected output; artifact discarded"
         );
-        if inputs(&self.root, &self.state, self.profile)? != self.files {
+        if self.inventory.capture(&self.root, &self.state)? != self.files {
             bail!("project inputs changed during semantic generation; artifact discarded");
         }
         let artifact = self.output.join("index.scip");
@@ -316,7 +205,7 @@ impl Snapshot {
         write(
             &manifest,
             &serde_json::to_vec(&serde_json::json!({
-                "artifact_blake3":blake3::hash(&bytes).to_hex().to_string(), "files":hashes
+                "artifact_blake3":blake3::hash(&bytes).to_hex().to_string(), "files":hashes, "inventory":self.inventory
             }))?,
         )?;
         let engine = crate::Engine::open_state_dir(&self.root, &self.state)?;
@@ -332,12 +221,12 @@ impl Snapshot {
 
 /// Run a fresh snapshot; producer stdout/stderr is deliberately not retained.
 /// Missing offline dependencies fail explicitly. There is no network fallback.
-pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
+pub fn rust(root: &Path, state: &Path, options: &Options) -> Result<crate::scip::ImportStats> {
     let analyzer = configured("AST_INDEX_SEMANTIC_RUST_ANALYZER")?;
     let cargo = configured("AST_INDEX_SEMANTIC_CARGO")?;
     let rustc = configured("AST_INDEX_SEMANTIC_RUSTC")?;
     let closure = configured("AST_INDEX_SEMANTIC_CLOSURE")?;
-    let snapshot = Snapshot::new(root, state, Profile::Rust)?;
+    let snapshot = Snapshot::new(root, state, Profile::Rust, options)?;
     let environment = [
         ("CARGO_HOME", "/tmp/cargo".to_owned()),
         ("CARGO_NET_OFFLINE", "true".to_owned()),
@@ -398,14 +287,24 @@ mod tests {
         ] {
             fs::write(root.join(file), "{}").unwrap();
         }
-        let files = inputs(root, &root.join("state"), Profile::TypeScript).unwrap();
+        let files = Inventory::new(Profile::TypeScript, &Options::default())
+            .capture(root, &root.join("state"))
+            .unwrap();
         assert_eq!(files.len(), 5);
         assert!(!files.contains_key("private.json") && !files.contains_key("script.js"));
         std::os::unix::fs::symlink("private.json", root.join("linked.ts")).unwrap();
-        assert!(inputs(root, &root.join("state"), Profile::TypeScript).is_err());
+        assert!(
+            Inventory::new(Profile::TypeScript, &Options::default())
+                .capture(root, &root.join("state"))
+                .is_err()
+        );
         fs::remove_file(root.join("linked.ts")).unwrap();
         fs::write(root.join("line\nbreak.ts"), "{}").unwrap();
-        assert!(inputs(root, &root.join("state"), Profile::TypeScript).is_err());
+        assert!(
+            Inventory::new(Profile::TypeScript, &Options::default())
+                .capture(root, &root.join("state"))
+                .is_err()
+        );
     }
     #[test]
     fn snapshot_rejects_config_symlinks_and_public_state() {
@@ -415,15 +314,25 @@ mod tests {
         fs::write(root.join("Cargo.lock"), "version = 4").unwrap();
         fs::write(root.join("private.json"), "PRIVATE_CANARY").unwrap();
         fs::write(root.join("lib.rs"), "fn f() {}").unwrap();
-        let files = inputs(root, &root.join("state"), Profile::Rust).unwrap();
+        let files = Inventory::new(Profile::Rust, &Options::default())
+            .capture(root, &root.join("state"))
+            .unwrap();
         assert_eq!(files.len(), 3);
         assert!(!files.contains_key("private.json"));
         std::os::unix::fs::symlink("private.json", root.join("linked.rs")).unwrap();
-        assert!(inputs(root, &root.join("state"), Profile::Rust).is_err());
+        assert!(
+            Inventory::new(Profile::Rust, &Options::default())
+                .capture(root, &root.join("state"))
+                .is_err()
+        );
         fs::remove_file(root.join("linked.rs")).unwrap();
         fs::create_dir(root.join(".cargo")).unwrap();
         fs::write(root.join(".cargo/config.toml"), "[build]").unwrap();
-        assert!(inputs(root, &root.join("state"), Profile::Rust).is_err());
+        assert!(
+            Inventory::new(Profile::Rust, &Options::default())
+                .capture(root, &root.join("state"))
+                .is_err()
+        );
         let state = root.join("state");
         private_directory(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();

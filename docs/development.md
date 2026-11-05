@@ -48,6 +48,11 @@ closure and no package manager/network access. It disables automatic type
 acquisition and telemetry, requires a no-emit check, caps protocol data and checks
 all input bytes before import. UTF-8/CRLF, same-line locations, config freshness,
 missing dependencies and private temporary-state cleanup have real runtime tests.
+Explicit regular `vendor/`/`node_modules/` inputs now have real offline acceptance
+tests, including a dependency build-script canary and external-call abstention.
+Versioned input inventories detect additions as well as changed/deleted sources,
+configuration and dependency files. The formerly missed added-source case has a
+failing-before/fixed-after regression; dependency inputs share all snapshot caps.
 
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining

@@ -6,6 +6,40 @@ const CONFIG: &str = r#"{"compilerOptions":{"strict":true,"target":"ES2022","mod
 const OPS: &str = "export class Base { get() {return 1;} static getStatic() {return 1;} }\nexport function target() {return 1;}\nexport function replacement() {return 2;}\n";
 
 #[test]
+fn added_typescript_inputs_invalidate_the_complete_semantic_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("project");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("tsconfig.json"), CONFIG).unwrap();
+    fs::write(
+        root.join("main.ts"),
+        "export function target() {} export function caller() {target();}",
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    producer::typescript(&root, &state, &Default::default()).unwrap();
+    let engine = Engine::open_state_dir(&root, &state).unwrap();
+    let query = Query {
+        action: "callees".into(),
+        query: Some("caller".into()),
+        evidence: Some("combined".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        engine.execute(&query).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::write(root.join("added.ts"), "export const added = 1;").unwrap();
+    assert!(
+        engine.execute(&query).is_err(),
+        "new selected input must invalidate the old snapshot"
+    );
+}
+
+#[test]
 fn real_typescript_producer_abstains_for_mutation_escape_and_structural_receivers() {
     // A separate project per counterexample prevents one broad abstention from
     // concealing another unsafe case. Most also require an unrelated positive.
@@ -132,7 +166,8 @@ fn real_typescript_producer_abstains_for_mutation_escape_and_structural_receiver
         );
         fs::write(root.join("main.ts"), &source).unwrap();
         let state = directory.path().join("state");
-        producer::typescript(&root, &state).unwrap_or_else(|error| panic!("{name}: {error}"));
+        producer::typescript(&root, &state, &Default::default())
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
         let engine = Engine::open_state_dir(&root, &state).unwrap();
         let result = engine
             .execute(&Query {
@@ -177,7 +212,7 @@ fn real_tsx_producer_preserves_language_identity_and_exact_calls() {
     )
     .unwrap();
     let state = directory.path().join("state");
-    producer::typescript(&root, &state).unwrap();
+    producer::typescript(&root, &state, &Default::default()).unwrap();
     let engine = Engine::open_state_dir(&root, &state).unwrap();
     let value = engine
         .execute(&Query {

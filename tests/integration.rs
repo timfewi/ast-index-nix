@@ -89,7 +89,7 @@ fn semantic_call_overlay_has_cli_mcp_parity_and_keeps_ast_queries_available() {
     .unwrap();
     let source = "#![no_std]\npub struct Counter;\nimpl Counter { pub fn get(&self) {} }\npub fn caller(c: &Counter) { c.get(); c.get(); }\n";
     std::fs::write(root.join("src/lib.rs"), source).unwrap();
-    ast_index::producer::rust(root, &root.join(".ast-index")).unwrap();
+    ast_index::producer::rust(root, &root.join(".ast-index"), &Default::default()).unwrap();
     for (action, name) in [
         ("callees", "caller"),
         ("callers", "Counter::get"),
@@ -201,7 +201,7 @@ fn typescript_call_overlay_has_cli_mcp_parity_and_rejects_stale_inputs() {
     let source = "export function target() {return 1;}\nexport function caller() {return target() + target();}\n";
     std::fs::write(root.join("tsconfig.json"), config).unwrap();
     std::fs::write(root.join("main.ts"), source).unwrap();
-    ast_index::producer::typescript(root, &root.join(".ast-index")).unwrap();
+    ast_index::producer::typescript(root, &root.join(".ast-index"), &Default::default()).unwrap();
     for (action, name) in [
         ("callees", "caller"),
         ("callers", "target"),
@@ -267,7 +267,8 @@ fn typescript_call_overlay_has_cli_mcp_parity_and_rejects_stale_inputs() {
                 .status
                 .success()
         );
-        ast_index::producer::typescript(root, &root.join(".ast-index")).unwrap();
+        ast_index::producer::typescript(root, &root.join(".ast-index"), &Default::default())
+            .unwrap();
         assert!(
             run_cli(
                 root,

@@ -3,6 +3,8 @@
 use ast_index::{Engine, producer, query::Query};
 use std::fs;
 
+#[path = "producer/dependencies.rs"]
+mod dependencies;
 #[path = "producer/typescript.rs"]
 mod typescript;
 
@@ -34,7 +36,7 @@ fn typescript_producer_uses_native_definitions_without_scripts_or_installation()
     .unwrap();
     fs::write(root.join("private.json"), "SYNTHETIC_PRIVATE_CANARY").unwrap();
     let state = directory.path().join("state");
-    let stats = producer::typescript(&root, &state).unwrap();
+    let stats = producer::typescript(&root, &state, &Default::default()).unwrap();
     assert_eq!(stats.documents, 2);
     assert_eq!(stats.occurrences, 3);
     assert!(fs::read_dir(&state).unwrap().all(|e| {
@@ -79,7 +81,9 @@ fn typescript_producer_uses_native_definitions_without_scripts_or_installation()
         "import {missing} from './unavailable_private_canary'; missing();",
     )
     .unwrap();
-    let error = producer::typescript(&root, &state).unwrap_err().to_string();
+    let error = producer::typescript(&root, &state, &Default::default())
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("offline TypeScript check failed"));
     assert!(!error.contains("unavailable_private_canary"));
     assert!(fs::read_dir(&state).unwrap().all(|e| {
@@ -115,7 +119,7 @@ fn rust_producer_disables_build_scripts_and_discards_artifacts_after_import() {
     .unwrap();
     fs::write(root.join("private.json"), "SYNTHETIC_PRIVATE_CANARY").unwrap();
     let state = directory.path().join("state");
-    let result = producer::rust(&root, &state).unwrap();
+    let result = producer::rust(&root, &state, &Default::default()).unwrap();
     assert!(result.documents >= 1 && result.occurrences >= 3);
     assert!(
         fs::read_dir(&state).unwrap().all(|e| !e
@@ -184,7 +188,7 @@ pub fn transformed_caller() { target(); }
         "pub fn skipped() {} pub fn offcaller() { skipped(); }",
     )
     .unwrap();
-    producer::rust(&root, &state).unwrap();
+    producer::rust(&root, &state, &Default::default()).unwrap();
     let engine = Engine::open_state_dir(&root, &state).unwrap();
     for name in [
         "pointer",

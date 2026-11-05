@@ -25,6 +25,7 @@ const SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 struct Manifest {
     artifact_blake3: String,
     files: HashMap<String, String>,
+    inventory: Option<crate::producer::Inventory>,
 }
 
 #[derive(Debug, Serialize)]
@@ -182,12 +183,30 @@ pub fn import(
         if manifest.files.len() > 2000 {
             return Err(invalid("semantic input budget exceeded"));
         }
-        let mut total = 0;
-        for (file, hash) in &manifest.files {
-            let bytes = source(root, file, SOURCE_BYTES.saturating_sub(total))?;
-            total += bytes.len() as u64;
-            if blake3::hash(&bytes).to_hex().as_str() != hash {
-                return Err(invalid("SCIP manifest input does not match current bytes"));
+        if let Some(inventory) = &manifest.inventory {
+            let actual = inventory
+                .hashes(root, runtime_exclusion(store))
+                .map_err(|_| {
+                    invalid("semantic input inventory is unavailable or exceeds its bounds")
+                })?;
+            if actual.len() != manifest.files.len()
+                || manifest
+                    .files
+                    .iter()
+                    .any(|(file, hash)| actual.get(file) != Some(hash))
+            {
+                return Err(invalid(
+                    "SCIP manifest inventory does not match current inputs",
+                ));
+            }
+        } else {
+            let mut total = 0;
+            for (file, hash) in &manifest.files {
+                let bytes = source(root, file, SOURCE_BYTES.saturating_sub(total))?;
+                total += bytes.len() as u64;
+                if blake3::hash(&bytes).to_hex().as_str() != hash {
+                    return Err(invalid("SCIP manifest input does not match current bytes"));
+                }
             }
         }
     }
@@ -291,19 +310,31 @@ pub fn import(
         return Err(invalid("SCIP artifact has no documents"));
     }
     if let Some(manifest) = &manifest {
+        if manifest.inventory.is_some()
+            && checked
+                .iter()
+                .any(|(doc, _)| !manifest.files.contains_key(&doc.relative_path))
+        {
+            return Err(invalid(
+                "SCIP document is outside the declared input inventory",
+            ));
+        }
         seen.extend(manifest.files.keys().cloned());
         if seen.len() > 2000 {
             return Err(invalid("combined semantic document/input budget exceeded"));
         }
     }
-    let calls = calls::build(
-        root,
-        store,
-        &checked,
-        &tool,
-        &digest,
-        manifest.as_ref().map(|m| &m.files),
-    )?;
+    // A supported producer alone cannot establish complete input freshness.
+    // Legacy/listed-only artifacts remain useful as raw navigation evidence.
+    let call_profile = manifest
+        .as_ref()
+        .filter(|m| m.inventory.is_some())
+        .and_then(|_| calls::profile(&tool));
+    let calls = if let (Some(_), Some(manifest)) = (call_profile, manifest.as_ref()) {
+        calls::build(root, store, &checked, &tool, &digest, &manifest.files)?
+    } else {
+        Vec::new()
+    };
     store.transaction(|| {
         store.conn.execute_batch("DELETE FROM semantic_implementations; DELETE FROM semantic_occurrences; DELETE FROM semantic_documents; DELETE FROM semantic_inputs;")?;
         if let Some(manifest) = &manifest {
@@ -311,6 +342,7 @@ pub fn import(
                 store.conn.execute("INSERT INTO semantic_inputs(file,hash) VALUES(?1,?2)", params![file,hash])?;
             }
         }
+        store.set_meta("semantic_input_inventory", &serde_json::to_string(&manifest.as_ref().and_then(|m|m.inventory.as_ref()))?)?;
         let mut stats=ImportStats { documents:checked.len(),occurrences:0,implementations:0,artifact_blake3:digest.clone(),generation:0 };
         for (document,hash) in &checked {
             let file=&document.relative_path;
@@ -334,10 +366,14 @@ pub fn import(
             }
         }
         store.bump_generation()?;
-        calls::persist(store, &calls, calls::profile(&tool))?;
+        calls::persist(store, &calls, call_profile)?;
         stats.generation=store.generation()?;
         Ok(stats)
     })
+}
+
+fn runtime_exclusion(store: &Store) -> &Path {
+    store.state_dir().unwrap_or(store.path())
 }
 
 pub(crate) fn stale_files(root: &Path, store: &Store) -> Result<Vec<String>> {
@@ -351,6 +387,28 @@ pub(crate) fn stale_files(root: &Path, store: &Store) -> Result<Vec<String>> {
     }
     if documents.len() > 2000 {
         return Err(invalid("semantic document budget exceeded"));
+    }
+    let inventory: Option<crate::producer::Inventory> = store
+        .meta("semantic_input_inventory")?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .flatten();
+    if let Some(inventory) = inventory {
+        let actual = inventory.hashes(root, runtime_exclusion(store))
+            .map_err(|_| invalid("semantic input inventory is unavailable or exceeds its bounds; refresh semantic evidence"))?;
+        let expected: HashSet<_> = documents.iter().map(|(file, _)| file.as_str()).collect();
+        let mut stale = std::collections::BTreeSet::new();
+        for (file, hash) in &documents {
+            if actual.get(file) != Some(hash) {
+                stale.insert(file.clone());
+            }
+        }
+        for file in actual.keys() {
+            if !expected.contains(file.as_str()) {
+                stale.insert(file.clone());
+            }
+        }
+        return Ok(stale.into_iter().collect());
     }
     let mut total_bytes = 0u64;
     let mut stale = Vec::new();

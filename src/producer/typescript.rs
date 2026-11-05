@@ -1,6 +1,6 @@
 //! Pinned TypeScript native LSP to local SCIP evidence. Definition navigation
 //! is not dispatch proof; the separate combined-call validator decides that.
-use super::{Profile, Snapshot, configured, write};
+use super::{Options, Profile, Snapshot, configured, write};
 use crate::{model::RefKind, scip::wire};
 use anyhow::{Context, Result, bail, ensure};
 use prost::Message;
@@ -208,10 +208,14 @@ fn occurrence(range: [u32; 4], symbol: &str, definition: bool) -> wire::Occurren
     }
 }
 
-pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
+pub fn typescript(
+    root: &Path,
+    state: &Path,
+    options: &Options,
+) -> Result<crate::scip::ImportStats> {
     let compiler = configured("AST_INDEX_SEMANTIC_TYPESCRIPT")?;
     let closure = configured("AST_INDEX_SEMANTIC_TYPESCRIPT_CLOSURE")?;
-    let snapshot = Snapshot::new(root, state, Profile::TypeScript)?;
+    let snapshot = Snapshot::new(root, state, Profile::TypeScript, options)?;
     // No emit, build mode, plugins, package scripts or installer. Missing
     // dependencies and invalid configuration fail before producing evidence.
     let mut check = snapshot
@@ -271,7 +275,7 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
     let mut line_offsets = BTreeMap::new();
     let mut sites = BTreeSet::new();
     for (file, bytes) in &snapshot.files {
-        if !included.contains(file.as_str()) {
+        if !included.contains(file.as_str()) || snapshot.inventory.is_dependency(file) {
             continue;
         }
         let Some(spec) =

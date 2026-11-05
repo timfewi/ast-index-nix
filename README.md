@@ -273,7 +273,10 @@ The importer never manufactures freshness evidence from today's files. Paths
 must be canonical relative paths without symlinks. Artifact root metadata never
 grants filesystem access. All supplied manifest inputs, including configuration
 and lockfiles, are validated at import and rechecked together with source during
-semantic queries; any mismatch excludes the artifact's results. Provenance
+semantic queries; any mismatch excludes the artifact's results. Manifests
+from the explicit runner additionally include a versioned input inventory, so
+newly added selected sources or dependency files also invalidate the snapshot.
+Older listed-file manifests retain their listed-file freshness scope. Provenance
 includes producer name/version and artifact digest. External-symbol metadata,
 hover documentation, producer arguments and unsupported relationship kinds are
 not imported. Raw semantic references never overwrite AST call edges.
@@ -293,7 +296,11 @@ Only the tool closure and snapshot are mounted. Build-script and proc-macro
 loading are disabled in the producer's SCIP implementation. Each producer stage
 has a 120-second timeout; missing offline dependencies or custom Cargo config
 cause an explicit failure. No dependency installation or network fallback occurs.
-The current profile does not yet provision external dependency caches.
+`--with-dependencies` explicitly includes an existing project-local `vendor/`
+directory for crates.io dependencies. The runner supplies fixed source-replacement
+configuration only inside its disposable snapshot; the checkout is unchanged.
+Git/private registries, custom Cargo configuration and global dependency caches
+remain unsupported. Dependencies must already exist as regular files.
 Snapshot/SCIP files are removed after import, including failure paths; producer
 diagnostics are not retained. Existing semantic data is replaced only after a
 successful validated import.
@@ -307,7 +314,9 @@ ast-index --root ./project --state-dir ./private-state refs --evidence ast --jso
 ```
 
 `combined` is available for refs, describe, callers, callees and impact in CLI/MCP.
-It requires fresh evidence and the same AST generation/profile; reindexing or
+It requires a validated complete input inventory, fresh evidence and the same
+AST generation/profile; listed-only or embedded-source artifacts remain raw
+navigation evidence. Reindexing or
 changing source/configuration requires another explicit producer refresh. AST is
 the default view. Semantic edges include producer/version/artifact provenance;
 unresolved refs expose conflicts, ambiguity and bounded possible-target evidence.
@@ -333,7 +342,9 @@ It uses pinned TypeScript 7.0.2's native LSP with UTF-8 positions, after a succe
 LSP requests, so excluded files cannot re-enter through inferred projects.
 Only TypeScript/TSX sources, `tsconfig*.json`, package manifests
 and recognized dependency locks enter the private snapshot. Runtime JavaScript,
-arbitrary JSON, `node_modules` and user-home files do not. Automatic type
+arbitrary JSON and user-home files do not. `node_modules/` is excluded by default;
+`--with-dependencies` explicitly includes its TypeScript/type sources and selected
+metadata. Dependency targets remain external to the project call graph. Automatic type
 acquisition and telemetry are disabled; the sandbox has no network or package
 manager on its executable search path. Protocol responses, candidate counts and
 runtime are bounded. Missing dependencies/configuration fail explicitly, without
@@ -346,6 +357,20 @@ effects abstain. Additional isolated safety tests cover these limits. This is a
 [named corpus/profile result](docs/semantic-quality.md#executed-typescript-acceptance),
 not a guarantee for arbitrary projects. Old definition-only TypeScript artifacts
 require an explicit refresh before `combined` is available.
+
+For already prepared local dependencies, opt in on the relevant runner command:
+
+```bash
+ast-index-semantic rust --root ./project --state-dir ./private-rust-state --with-dependencies
+ast-index-semantic typescript --root ./project --state-dir ./private-ts-state --with-dependencies
+```
+
+Project and dependency inputs share one bound: 2,000 files, 128 MiB total,
+2 MiB per file and a 50,000-entry/30-second traversal. Symlinked dependency trees
+are rejected; no home cache is discovered, dependency downloaded or package
+script executed. Files/configuration/locks are checked before import and at query
+time, including additions/deletions. Legacy manifests without an inventory only
+check their declared files. These checks are point-in-time observations.
 
 ## Resource limits and local state
 
