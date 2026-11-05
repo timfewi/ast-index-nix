@@ -22,6 +22,17 @@ struct Binding {
     import: Option<(String, String)>,
 }
 
+fn lookup<'a>(scopes: &'a [Scope], mut scope: usize, name: &str) -> Option<&'a Binding> {
+    loop {
+        if !scopes[scope].member_namespace
+            && let Some(binding) = scopes[scope].bindings.get(name)
+        {
+            return Some(binding);
+        }
+        scope = scopes[scope].parent?;
+    }
+}
+
 fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or_default()
 }
@@ -295,6 +306,21 @@ pub(super) fn apply(
                 "attribute" | "member_expression" | "field_expression"
             )
         }) {
+            // A namespace import has an explicit module identity; arbitrary
+            // object receivers still require type/runtime information.
+            if matches!(language, "javascript" | "typescript" | "tsx")
+                && let Some(object) = function.and_then(|n| n.child_by_field_name("object"))
+                && object.kind() == "identifier"
+                && let Some(binding) = lookup(&scopes, scope, text(object, source))
+                && let Some((module, name)) = &binding.import
+                && name == "*"
+            {
+                reference.path = Some(format!(
+                    "@import:{}",
+                    serde_json::json!([module, reference.name])
+                ));
+                continue;
+            }
             // Only Rust's explicit `self` receiver inside an impl is structural.
             if language == "rust"
                 && std::iter::successors(node.parent(), |parent| parent.parent())
@@ -315,6 +341,28 @@ pub(super) fn apply(
             }
             reference.blocked = Some("dynamic".into());
             continue;
+        }
+        if language == "rust" {
+            let head = reference
+                .path
+                .as_deref()
+                .unwrap_or(&reference.name)
+                .split("::")
+                .next()
+                .unwrap_or_default();
+            if let Some(binding) = lookup(&scopes, scope, head) {
+                if let Some((path, _)) = &binding.import {
+                    let suffix = reference
+                        .path
+                        .as_deref()
+                        .and_then(|p| p.strip_prefix(head))
+                        .unwrap_or_default();
+                    reference.path = Some(format!("{path}{suffix}"));
+                } else if reference.path.is_some() && binding.target.is_none() {
+                    reference.blocked = Some(binding.reason.into());
+                    continue;
+                }
+            }
         }
         if let Some(path) = &reference.path {
             if language == "rust" && (path.starts_with("self::") || path.starts_with("super::")) {
@@ -356,7 +404,12 @@ pub(super) fn apply(
             if let Some(binding) = scopes[id].bindings.get(&reference.name) {
                 found = true;
                 if let Some((module, name)) = &binding.import {
-                    reference.path = Some(format!("@import:{}", serde_json::json!([module, name])));
+                    if name == "*" {
+                        reference.blocked = Some("unsupported_import".into());
+                    } else {
+                        reference.path =
+                            Some(format!("@import:{}", serde_json::json!([module, name])));
+                    }
                 } else if let Some(symbol) = binding.target.and_then(|byte| definitions.get(&byte))
                 {
                     reference.path = Some(symbol.qualified.clone());
@@ -386,7 +439,15 @@ fn named_imports(node: Node<'_>, source: &str, language: &str) -> Vec<(String, S
         let module = text(module, source).trim_matches(['\'', '"']).to_string();
         let mut stack = vec![node];
         while let Some(part) = stack.pop() {
-            if part.kind() == "import_specifier"
+            if part.kind() == "namespace_import" {
+                let mut cursor = part.walk();
+                if let Some(local) = part
+                    .named_children(&mut cursor)
+                    .find(|n| n.kind() == "identifier")
+                {
+                    result.push((text(local, source).into(), module.clone(), "*".into()));
+                }
+            } else if part.kind() == "import_specifier"
                 && !text(part, source).trim_start().starts_with("type ")
             {
                 if let Some(name) = part.child_by_field_name("name") {
@@ -400,6 +461,54 @@ fn named_imports(node: Node<'_>, source: &str, language: &str) -> Vec<(String, S
             } else {
                 let mut cursor = part.walk();
                 stack.extend(part.named_children(&mut cursor));
+            }
+        }
+    } else if language == "rust" {
+        if let Some(argument) = node.child_by_field_name("argument") {
+            let mut stack = vec![(argument, String::new())];
+            while let Some((part, prefix)) = stack.pop() {
+                match part.kind() {
+                    "scoped_use_list" => {
+                        let path = part
+                            .child_by_field_name("path")
+                            .map(|n| text(n, source))
+                            .unwrap_or_default();
+                        if let Some(list) = part.child_by_field_name("list") {
+                            stack.push((list, format!("{prefix}{path}::")));
+                        }
+                    }
+                    "use_list" => {
+                        let mut cursor = part.walk();
+                        stack.extend(
+                            part.named_children(&mut cursor)
+                                .map(|n| (n, prefix.clone())),
+                        );
+                    }
+                    "identifier" | "scoped_identifier" | "self" | "use_as_clause" => {
+                        let path = part
+                            .child_by_field_name("path")
+                            .filter(|_| part.kind() == "use_as_clause")
+                            .unwrap_or(part);
+                        let path = if text(path, source) == "self" {
+                            prefix.trim_end_matches("::").to_string()
+                        } else {
+                            format!("{prefix}{}", text(path, source))
+                        };
+                        let local = part
+                            .child_by_field_name("alias")
+                            .map(|n| text(n, source))
+                            .unwrap_or_else(|| path.rsplit("::").next().unwrap_or_default());
+                        // External crates, globs and implicit crate aliases do
+                        // not acquire local candidates through name matching.
+                        if path.starts_with("crate::")
+                            || path.starts_with("self::")
+                            || path.starts_with("super::")
+                        {
+                            result.push((local.to_string(), path, String::new()));
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     } else if language == "python" && node.kind() == "import_from_statement" {

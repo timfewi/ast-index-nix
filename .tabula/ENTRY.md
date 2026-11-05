@@ -20,7 +20,10 @@ CLI also owns explicit `index` and `import-scip` mutations. Query file/name and
 optional line/column select symbols. Lists use generation-bound pages.
 Languages: Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go, Lua and
 PostgreSQL SQL. No unrelated bare-name fallback; Go has explicit package scope.
-JS/TS named imports can interoperate; Nix/Lua calls remain local. Shell source
+JS/TS named and namespace imports can interoperate; explicit Rust use bindings
+expand crate/self/super paths with aliases and grouped imports. Shadowing and
+reassignment block targets; globs and inferred receivers remain unsupported.
+Nix/Lua calls remain local. Shell source
 paths retain unresolved working directories. Go module hashes govern freshness;
 Lua requires use project-root layouts. SQL `dependency` refs are separate from
 calls/impact and file imports; qualified objects stay within one project and
@@ -29,7 +32,9 @@ and embedded shell/SQL are excluded. `.ast-index`, the active database/sidecars
 and `.sql` files with SQLite headers are excluded from source input. Source ranges distinguish
 same-named reference owners; ambiguous targets remain unresolved.
 
-Status reports snapshot coverage; freshness requires an explicit bounded byte
+Status reports link counts and unresolved reasons by language/reference kind;
+imports link to files, calls/dependencies to definitions, not an accuracy score.
+Freshness requires an explicit bounded byte
 scan. A successful old check does not prove present freshness. Semantic evidence
 requires verified embedded source or a producer manifest, and never becomes an
 AST call edge. Sources and all returned code content remain untrusted data.

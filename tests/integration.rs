@@ -76,6 +76,152 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ast-index"))
 }
 
+#[test]
+fn explicit_imports_resolve_without_guessing_shadowed_or_dynamic_targets() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for (name, source) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = 'fixture'\nversion = '0.1.0'\n",
+        ),
+        (
+            "lib.rs",
+            "mod helper; use crate::helper::{work as alias, Thing}; fn entry() { alias(); Thing::make(); } fn shadow(alias: fn()) { alias(); } mod nested { use super::helper::work; fn entry() { work(); } }",
+        ),
+        (
+            "helper.rs",
+            "pub fn work() {} pub struct Thing; impl Thing { pub fn make() {} }",
+        ),
+        (
+            "helper.ts",
+            "export function work() {} function hidden() {} export class Thing { static make() {} }",
+        ),
+        (
+            "main.ts",
+            "import * as api from './helper'; function entry() { api.work(); api.hidden(); api.Thing.make(); } function shadow(api: any) { api.work(); }",
+        ),
+        (
+            "reassigned.js",
+            "import * as api from './helper'; api = other; function entry() { api.work(); }",
+        ),
+        (
+            "external.ts",
+            "import * as api from 'external'; function entry() { api.work(); }",
+        ),
+        (
+            "types.ts",
+            "import type * as api from './helper'; function entry() { api.work(); }",
+        ),
+        (
+            "aliases.rs",
+            "use crate::helper::{self as h, work as alias}; fn entry() { h::work(); alias(); } fn shadow() { let h = 1; h::work(); }",
+        ),
+        (
+            "ambiguous.rs",
+            "use crate::helper::work as alias; use crate::other::work as alias; fn entry() { alias(); }",
+        ),
+        (
+            "external.rs",
+            "use external::work as alias; fn entry() { alias(); }",
+        ),
+        ("other.rs", "pub fn work() {}"),
+    ] {
+        std::fs::write(root.join(name), source).unwrap();
+    }
+    run_cli_json(root, &["index", "--json"]);
+    for (file, expected) in [
+        ("lib.rs", 3),
+        ("main.ts", 1),
+        ("reassigned.js", 0),
+        ("external.ts", 0),
+        ("types.ts", 0),
+        ("aliases.rs", 2),
+        ("ambiguous.rs", 0),
+        ("external.rs", 0),
+    ] {
+        let refs = raw_json(root, &["refs", file, "--kind", "call", "--json"]);
+        let rows = refs["items"].as_array().unwrap();
+        assert_eq!(
+            rows.iter().filter(|r| r["resolved"].is_number()).count(),
+            expected,
+            "{file}: {rows:?}"
+        );
+        for row in rows.iter().filter(|r| r["resolved"].is_number()) {
+            let target_file = if file.ends_with(".rs") {
+                "helper.rs"
+            } else {
+                "helper.ts"
+            };
+            let target_name = if row["name"] == "make" {
+                "make"
+            } else {
+                "work"
+            };
+            let symbols = run_cli_json(
+                root,
+                &[
+                    "search",
+                    target_name,
+                    "--file",
+                    target_file,
+                    "--match-mode",
+                    "exact",
+                    "--json",
+                ],
+            );
+            assert_eq!(symbols.as_array().unwrap().len(), 1);
+            assert_eq!(row["resolved"], symbols[0]["id"], "{row}");
+        }
+    }
+    let status = raw_json(root, &["status", "--json"]);
+    assert_eq!(
+        status,
+        mcp_json(
+            root,
+            serde_json::json!({"action": "status", "format": "json"})
+        )
+    );
+    let coverage = status["reference_coverage"].as_array().unwrap();
+    assert_eq!(
+        coverage
+            .iter()
+            .map(|r| r["references"].as_i64().unwrap())
+            .sum::<i64>(),
+        status["references"].as_i64().unwrap()
+    );
+    for row in coverage {
+        let unresolved: i64 = row["unresolved_reasons"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_i64().unwrap())
+            .sum();
+        assert_eq!(
+            row["references"].as_i64().unwrap(),
+            row["linked"].as_i64().unwrap() + unresolved
+        );
+    }
+    let ts_calls = coverage
+        .iter()
+        .find(|r| r["language"] == "typescript" && r["kind"] == "call")
+        .unwrap();
+    assert_eq!(ts_calls["linked"], 1);
+    assert_eq!(ts_calls["references"], 6);
+    let ts_imports = coverage
+        .iter()
+        .find(|r| r["language"] == "typescript" && r["kind"] == "import")
+        .unwrap();
+    assert_eq!(ts_imports["linked"], 2);
+    let nice = run_cli(root, &["status", "--nice"]);
+    assert!(nice.status.success());
+    assert!(
+        String::from_utf8(nice.stdout)
+            .unwrap()
+            .contains("not semantic accuracy")
+    );
+}
+
 fn run_cli(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(binary())
         .arg("--root")

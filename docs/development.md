@@ -11,12 +11,18 @@ imports, extraction/resolution fingerprints, schema version 6 and SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-66 unit and 47 integration tests, formatting, Clippy (`-D warnings`), deadnix,
+69 unit and 53 integration tests, formatting, Clippy (`-D warnings`), deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
 order/builtin shadowing, Lua mutation, SQL namespaces/CTEs/owners, shared read
 budgets and exclusion of internal/custom/renamed SQLite databases. All added tag
 queries compile against their pinned grammars and Tree-sitter 0.25.10.
+
+Explicit Rust use bindings and JS/TS namespace-import calls now use lexical
+import identity. The regression fails with the previous extractor and checks
+exact targets and conservative negative cases with the new one. Status separates
+link coverage by language and reference kind, including unresolved reasons;
+CLI and MCP JSON agree. These counts are not semantic recall or accuracy.
 
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining

@@ -69,6 +69,12 @@ The current fast gate and remaining coverage limits are recorded in
 | R50 | Extensionless shebang detection, module metadata freshness, repeated indexing, binary SQLite header rejection and unconditional exclusion of internal index files | done | `shell_shebangs_and_incremental_detection_are_bounded_and_static`, `go_packages_imports_module_changes_and_shadowing_share_cli_mcp_contracts`, `sql_dependencies_never_become_calls_or_index_internal_database_files`, `custom_sql_database_and_renamed_sqlite_are_excluded_from_source_indexing`, SQL namespace/CTE/quoted-identifier integration tests |
 | R51 | Header, Go metadata and source reads share a byte budget, including failures; external module metadata is rejected | done | `failed_reads_consume_the_shared_budget`, `new_language_metadata_reads_share_scan_budget_and_reject_root_escape` |
 
+Explicit Rust use bindings (crate/self/super, groups and aliases), JS/TS namespace
+imports and per-language/per-kind status coverage are verified by
+`explicit_imports_resolve_without_guessing_shadowed_or_dynamic_targets`. It checks
+exact target identities, shadowing, alias collisions, reassignment, external and
+type-only imports, CLI/MCP status parity and coverage count conservation.
+
 ## Deliberately deferred
 
 - Watcher acceleration: explicit byte scans remain the correctness mechanism.
@@ -82,6 +88,16 @@ The current fast gate and remaining coverage limits are recorded in
 - Starting SCIP producers, language servers or build tools.
 
 ## Evidence limits
+
+A 90%+ target needs a versioned, independently labelled corpus of internal
+statically resolvable references, per language. Measure recall against its expected
+targets and precision against all returned targets; count wrong targets as errors,
+not successes. Track external, dynamic and unsupported cases separately without
+silently removing unsupported internal cases from the recall denominator. The
+current snapshot link counts and synthetic regression cases do not establish
+that target. Receiver typing and module/build configuration require separate
+semantic evidence (for example verified SCIP), not a same-name fallback. SCIP
+definition/reference evidence must remain distinct from proven call edges.
 
 The fixtures demonstrate specific structural cases, not semantic accuracy across
 arbitrary programs. Dynamic dispatch, reflection, macros, generated code,

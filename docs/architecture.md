@@ -69,7 +69,12 @@ member namespaces do not provide implicit bare-name access. Dynamic receivers re
 Rust `self` method calls inside an impl can use its structural owner. Rust literal
 module paths use file/module layout within the nearest project boundary. Named
 Python imports and JavaScript/TypeScript imports can resolve to indexed exported
-symbols. Re-exports, runtime loaders, build-system module remapping and inferred
+symbols. JS/TS namespace-import receivers resolve direct named exports, respecting
+lexical shadowing, reassignment and type-only imports. Explicit Rust
+`crate`/`self`/`super` use bindings (including grouped imports, module aliases and
+renamed symbols) expand into the existing literal module-path resolver. Globs
+and implicit/external crate aliases do not introduce guessed candidates.
+Re-exports, runtime loaders, build-system module remapping and inferred
 receiver types are not implemented.
 
 Nearest `Cargo.toml`, `package.json`, `pyproject.toml`, `setup.py`, `go.mod` or
@@ -120,8 +125,12 @@ and materializes only a requested page of symbols. SQLite VM work and graph work
 have separate caps. Exact and prefix search have query-plan regression checks;
 substring search remains a bounded scan.
 
-Status describes an indexed snapshot, never perpetual freshness. Explicit
-freshness reads compare current bytes, including same-size/same-mtime edits.
+Status describes an indexed snapshot, never perpetual freshness.
+`reference_coverage` rows separate language and reference kind, with linked
+counts and all unresolved reasons. Imports link to files; calls/dependencies
+link to definitions. These ratios describe observed links, not semantic recall
+or accuracy; dynamic/external references remain in the totals.
+Explicit freshness reads compare current bytes, including same-size/same-mtime edits.
 Traversal errors retain absent indexed paths instead of asserting deletion.
 Known failed reads and parse errors produce incomplete coverage. Historical
 successful freshness checks do not make later status calls claim current freshness.

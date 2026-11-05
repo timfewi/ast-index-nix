@@ -706,6 +706,37 @@ impl Store {
             .prepare("SELECT reason,COUNT(*) FROM refs GROUP BY reason ORDER BY reason")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        let mut coverage = std::collections::BTreeMap::new();
+        let mut statement = self.conn.prepare(
+            "SELECT f.lang,r.kind,r.reason,
+             CASE WHEN r.kind='import' THEN r.import_target IS NOT NULL
+                  ELSE r.resolved_symbol_id IS NOT NULL END AS linked, COUNT(*)
+             FROM refs r JOIN files f ON f.id=r.file_id
+             GROUP BY f.lang,r.kind,r.reason,linked",
+        )?;
+        let mut counts = statement.query([])?;
+        while let Some(row) = counts.next()? {
+            let language: String = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let reason: String = row.get(2)?;
+            let linked: bool = row.get(3)?;
+            let count: i64 = row.get(4)?;
+            let entry = coverage
+                .entry((language.clone(), kind.clone()))
+                .or_insert_with(|| crate::model::ReferenceCoverage {
+                    language,
+                    kind,
+                    references: 0,
+                    linked: 0,
+                    unresolved_reasons: Default::default(),
+                });
+            entry.references += count;
+            if linked {
+                entry.linked += count;
+            } else {
+                *entry.unresolved_reasons.entry(reason).or_default() += count;
+            }
+        }
         let freshness = if !indexed {
             "not_indexed"
         } else if health
@@ -744,6 +775,7 @@ impl Store {
             parser_versions,
             current_parser_versions,
             resolution_reasons: reasons,
+            reference_coverage: coverage.into_values().collect(),
             resolution_version,
             current_resolution_version,
         })

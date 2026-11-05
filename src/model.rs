@@ -220,6 +220,18 @@ pub struct Status {
     pub resolution_version: Option<String>,
     pub current_resolution_version: String,
     pub resolution_reasons: std::collections::BTreeMap<String, i64>,
+    pub reference_coverage: Vec<ReferenceCoverage>,
+}
+
+/// Snapshot link coverage, not precision or recall against a semantic oracle.
+/// Imports link to indexed files; calls/dependencies link to definitions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceCoverage {
+    pub language: String,
+    pub kind: String,
+    pub references: i64,
+    pub linked: i64,
+    pub unresolved_reasons: std::collections::BTreeMap<String, i64>,
 }
 
 /// One row of the language breakdown in `status`.

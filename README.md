@@ -168,6 +168,20 @@ queries support an exact file filter and an optional symbol or display name.
 
 ## Coverage and freshness
 
+`status` reports `reference_coverage` separately by language and reference kind,
+including linked counts and unresolved reasons. `status --nice` displays these
+rates and the three largest unresolved categories per row. Imports link to
+indexed files, while calls and dependencies link to definitions; combining
+their denominators hides this distinction. Link coverage is not semantic
+accuracy or recall. Dynamic/external cases are not removed to inflate a score.
+Use `refs --language <language> --kind call --reason <reason>` to inspect a gap.
+
+Explicit Rust `use crate::...`, `use self::...` and `use super::...` bindings
+support grouped imports and aliases. JS/TS namespace imports such as
+`import * as helpers from './helpers'` resolve direct calls to named exports.
+Shadowing, reassignment, type-only imports, globs and unknown receivers never
+gain targets through a bare-name fallback.
+
 Status reports index age, generation, failures, skipped files, parse-error
 coverage, resolution reasons and indexed/current extraction and resolution
 versions. Ordinary status says `unknown` for present freshness unless there is

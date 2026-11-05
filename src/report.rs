@@ -36,6 +36,7 @@ pub fn status_text(status: &Status) -> String {
             language.language, language.files, language.symbols
         ));
     }
+    coverage_text(&mut output, status);
     output.trim_end().to_string()
 }
 
@@ -94,15 +95,10 @@ pub fn status_nice(status: &Status, now: i64) -> String {
             .map_or_else(|| "never".to_string(), |at| when(at, now)),
         status.generation
     ));
-    let resolved = format!(
-        "{} ({} linked to a definition)",
-        group(status.references),
-        percent(status.resolved_references, status.references)
-    );
     for (label, value) in [
         ("Files", group(status.files)),
         ("Symbols", group(status.symbols)),
-        ("References", resolved),
+        ("References", group(status.references)),
         ("Imports", group(status.imports)),
     ] {
         out.push_str(&format!("  {label:<13} {value}\n"));
@@ -122,6 +118,7 @@ pub fn status_nice(status: &Status, now: i64) -> String {
             group(language.symbols)
         ));
     }
+    coverage_text(&mut out, status);
     let mut reasons: Vec<_> = status.resolution_reasons.iter().collect();
     reasons.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
     let width = reasons
@@ -138,6 +135,29 @@ pub fn status_nice(status: &Status, now: i64) -> String {
         ));
     }
     out.trim_end().to_string()
+}
+
+fn coverage_text(out: &mut String, status: &Status) {
+    if status.reference_coverage.is_empty() {
+        return;
+    }
+    out.push_str("\n  Link coverage (not semantic accuracy; imports link to files)\n");
+    out.push_str("  Language     Kind          Linked      Total    Rate\n");
+    for row in &status.reference_coverage {
+        out.push_str(&format!(
+            "  {:<12} {:<10} {:>9} {:>10} {:>7}\n",
+            row.language,
+            row.kind,
+            group(row.linked),
+            group(row.references),
+            percent(row.linked, row.references)
+        ));
+        let mut reasons: Vec<_> = row.unresolved_reasons.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (reason, count) in reasons.into_iter().take(3) {
+            out.push_str(&format!("    unresolved {reason}: {}\n", group(*count)));
+        }
+    }
 }
 
 /// `1234567` -> `1,234,567`.
@@ -376,7 +396,7 @@ mod tests {
             "languages": [], "generation": 2, "freshness": "incomplete",
             "last_freshness_check": null, "parser_versions": {},
             "current_parser_versions": {}, "resolution_version": null,
-            "current_resolution_version": "v", "resolution_reasons": {},
+            "current_resolution_version": "v", "resolution_reasons": {}, "reference_coverage": [],
             "health": {
                 "files_seen": 1200, "files_indexed": 1200, "files_unchanged": 0,
                 "files_removed": 0, "files_skipped": 0, "files_failed": 0,
@@ -393,6 +413,6 @@ mod tests {
         assert!(text.contains("- 2 files with syntax errors\n"));
         assert!(!text.contains("scan stopped early"));
         assert!(text.contains("Files         1,200\n"));
-        assert!(text.contains("References    4 (25.0% linked to a definition)"));
+        assert!(text.contains("References    4\n"));
     }
 }
