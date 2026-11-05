@@ -14,6 +14,54 @@ const MAX_FILES: usize = 2000;
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 
+mod typescript;
+pub use typescript::typescript;
+
+#[derive(Clone, Copy)]
+enum Profile {
+    Rust,
+    TypeScript,
+}
+
+impl Profile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::TypeScript => "typescript",
+        }
+    }
+
+    fn manifest(self) -> &'static str {
+        match self {
+            Self::Rust => "Cargo.toml",
+            Self::TypeScript => "tsconfig.json",
+        }
+    }
+
+    fn selects(self, path: &Path) -> bool {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        match self {
+            Self::Rust => {
+                path.extension().is_some_and(|e| e == "rs")
+                    || matches!(name, "Cargo.toml" | "Cargo.lock")
+            }
+            Self::TypeScript => {
+                crate::lang::detect(path).is_some_and(|s| matches!(s.id, "typescript" | "tsx"))
+                    || (name.starts_with("tsconfig") && name.ends_with(".json"))
+                    || matches!(
+                        name,
+                        "package.json"
+                            | "package-lock.json"
+                            | "npm-shrinkwrap.json"
+                            | "pnpm-lock.yaml"
+                            | "yarn.lock"
+                            | "bun.lock"
+                    )
+            }
+        }
+    }
+}
+
 fn private_directory(path: &Path) -> Result<()> {
     // Do not chmod an existing directory or follow an output symlink.
     for ancestor in path.ancestors() {
@@ -63,10 +111,12 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Inputs are bounded and selected by language/configuration, not by arbitrary
 /// files in the project. A second full inventory detects additions/deletions.
-fn inputs(root: &Path, excluded: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+fn inputs(root: &Path, excluded: &Path, profile: Profile) -> Result<BTreeMap<String, Vec<u8>>> {
     ensure!(
-        root.join("Cargo.toml").is_file(),
-        "Rust profile needs Cargo.toml"
+        root.join(profile.manifest()).is_file(),
+        "{} profile needs {}",
+        profile.name(),
+        profile.manifest()
     );
     let mut files = BTreeMap::new();
     let mut total = 0;
@@ -96,19 +146,15 @@ fn inputs(root: &Path, excluded: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             // Cargo configuration can replace compiler executables. This first
             // profile rejects it rather than silently ignoring its semantics.
             ensure!(
-                !entry.path().join(".cargo/config").exists()
-                    && !entry.path().join(".cargo/config.toml").exists(),
+                !matches!(profile, Profile::Rust)
+                    || (!entry.path().join(".cargo/config").exists()
+                        && !entry.path().join(".cargo/config.toml").exists()),
                 "custom Cargo configuration is not supported by the offline Rust profile"
             );
             continue;
         }
         let path = entry.path();
-        let selected = path.extension().is_some_and(|e| e == "rs")
-            || matches!(
-                path.file_name().and_then(|n| n.to_str()),
-                Some("Cargo.toml" | "Cargo.lock")
-            );
-        if !selected {
+        if !profile.selects(path) {
             continue;
         }
         ensure!(files.len() < MAX_FILES, "snapshot file budget exceeded");
@@ -118,6 +164,10 @@ fn inputs(root: &Path, excluded: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             .context("non UTF-8 source path")?;
         ensure!(relative.len() <= 4096, "snapshot path budget exceeded");
         ensure!(
+            !matches!(profile, Profile::TypeScript) || !relative.chars().any(char::is_control),
+            "TypeScript snapshot paths must not contain control characters"
+        );
+        ensure!(
             path.canonicalize()? == path,
             "snapshot input path contains a symbolic link"
         );
@@ -126,8 +176,9 @@ fn inputs(root: &Path, excluded: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
         files.insert(relative.to_owned(), bytes);
     }
     ensure!(
-        files.contains_key("Cargo.toml") && files.contains_key("Cargo.lock"),
-        "offline Rust profile requires an included Cargo.toml and existing Cargo.lock"
+        files.contains_key(profile.manifest())
+            && (!matches!(profile, Profile::Rust) || files.contains_key("Cargo.lock")),
+        "offline profile requires its included root manifest and Rust Cargo.lock"
     );
     Ok(files)
 }
@@ -138,46 +189,64 @@ fn configured(name: &str) -> Result<PathBuf> {
         .with_context(|| format!("missing {name}; use the packaged semantic runner"))
 }
 
-/// Run a fresh snapshot; producer stdout/stderr is deliberately not retained.
-/// Missing offline dependencies fail explicitly. There is no network fallback.
-pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
-    let sandbox = configured("AST_INDEX_SEMANTIC_BWRAP")?;
-    let timeout = configured("AST_INDEX_SEMANTIC_TIMEOUT")?;
-    let analyzer = configured("AST_INDEX_SEMANTIC_RUST_ANALYZER")?;
-    let cargo = configured("AST_INDEX_SEMANTIC_CARGO")?;
-    let rustc = configured("AST_INDEX_SEMANTIC_RUSTC")?;
-    let closure = configured("AST_INDEX_SEMANTIC_CLOSURE")?;
-    let root = root.canonicalize()?;
-    private_directory(state)?;
-    let state = state.canonicalize()?;
-    ensure!(
-        state != root && !root.starts_with(&state),
-        "runtime state must not contain the project"
-    );
-    let files = inputs(&root, &state)?;
-    let temporary = tempfile::Builder::new()
-        .prefix("semantic-rust-")
-        .tempdir_in(&state)?;
-    let snapshot = temporary.path().join("project");
-    let output = temporary.path().join("output");
-    private_directory(&snapshot)?;
-    private_directory(&output)?;
-    for (file, bytes) in &files {
-        let path = snapshot.join(file);
-        if let Some(parent) = path.parent() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)?;
+/// A private stable snapshot and its disposable output, shared by the two
+/// explicit producers. The snapshot never grants access to the original root.
+struct Snapshot {
+    root: PathBuf,
+    state: PathBuf,
+    profile: Profile,
+    files: BTreeMap<String, Vec<u8>>,
+    _temporary: tempfile::TempDir,
+    project: PathBuf,
+    output: PathBuf,
+}
+
+impl Snapshot {
+    fn new(root: &Path, state: &Path, profile: Profile) -> Result<Self> {
+        let root = root.canonicalize()?;
+        private_directory(state)?;
+        let state = state.canonicalize()?;
+        ensure!(
+            state != root && !root.starts_with(&state),
+            "runtime state must not contain the project"
+        );
+        let files = inputs(&root, &state, profile)?;
+        let temporary = tempfile::Builder::new()
+            .prefix(&format!("semantic-{}-", profile.name()))
+            .tempdir_in(&state)?;
+        let project = temporary.path().join("project");
+        let output = temporary.path().join("output");
+        private_directory(&project)?;
+        private_directory(&output)?;
+        for (file, bytes) in &files {
+            let path = project.join(file);
+            if let Some(parent) = path.parent() {
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)?;
+            }
+            write(&path, bytes)?;
         }
-        write(&path, bytes)?;
+        Ok(Self {
+            root,
+            state,
+            profile,
+            files,
+            _temporary: temporary,
+            project,
+            output,
+        })
     }
-    let paths = String::from_utf8(read(&closure, 1024 * 1024)?)?;
-    let sandbox_command = || -> Result<Command> {
-        let mut command = Command::new(&timeout);
+
+    fn command(&self, closure: &Path, environment: &[(&str, String)]) -> Result<Command> {
+        let sandbox = configured("AST_INDEX_SEMANTIC_BWRAP")?;
+        let timeout = configured("AST_INDEX_SEMANTIC_TIMEOUT")?;
+        let paths = String::from_utf8(read(closure, 1024 * 1024)?)?;
+        let mut command = Command::new(timeout);
         command
             .args(["--signal=TERM", "--kill-after=5s", "120s"])
-            .arg(&sandbox);
+            .arg(sandbox);
         command.args([
             "--unshare-all",
             "--die-with-parent",
@@ -191,17 +260,12 @@ pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
             );
             command.args(["--ro-bind", path, path]);
         }
-        let path = format!(
-            "{}:{}",
-            cargo.parent().context("cargo directory")?.display(),
-            rustc.parent().context("rustc directory")?.display()
-        );
         command
-            .args(["--ro-bind"])
-            .arg(&snapshot)
+            .arg("--ro-bind")
+            .arg(&self.project)
             .arg("/project")
             .arg("--bind")
-            .arg(&output)
+            .arg(&self.output)
             .arg("/output")
             .args([
                 "--proc",
@@ -218,28 +282,77 @@ pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
                 "HOME",
                 "/tmp/home",
                 "--setenv",
-                "CARGO_HOME",
-                "/tmp/cargo",
-                "--setenv",
-                "CARGO_NET_OFFLINE",
-                "true",
-                "--setenv",
-                "CARGO_TARGET_DIR",
-                "/tmp/target",
-                "--setenv",
                 "PATH",
-                &path,
-                "--chdir",
-                "/project",
-                "--",
+                "/nonexistent",
             ]);
+        for (name, value) in environment {
+            command.args(["--setenv", name, value]);
+        }
+        command.args(["--chdir", "/project", "--"]);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         Ok(command)
-    };
-    let metadata = sandbox_command()?
+    }
+
+    fn import(self) -> Result<crate::scip::ImportStats> {
+        let outputs: Vec<_> = fs::read_dir(&self.output)?.collect::<std::io::Result<_>>()?;
+        ensure!(
+            outputs.len() == 1 && outputs[0].file_name() == "index.scip",
+            "producer wrote unexpected output; artifact discarded"
+        );
+        if inputs(&self.root, &self.state, self.profile)? != self.files {
+            bail!("project inputs changed during semantic generation; artifact discarded");
+        }
+        let artifact = self.output.join("index.scip");
+        let bytes = read(&artifact, 4 * 1024 * 1024)?;
+        let manifest = self.output.join("manifest.json");
+        let hashes: BTreeMap<_, _> = self
+            .files
+            .iter()
+            .map(|(path, bytes)| (path, blake3::hash(bytes).to_hex().to_string()))
+            .collect();
+        write(
+            &manifest,
+            &serde_json::to_vec(&serde_json::json!({
+                "artifact_blake3":blake3::hash(&bytes).to_hex().to_string(), "files":hashes
+            }))?,
+        )?;
+        let engine = crate::Engine::open_state_dir(&self.root, &self.state)?;
+        engine.index(&crate::IndexOptions::default())?;
+        Ok(crate::scip::import(
+            &self.root,
+            engine.store(),
+            &artifact,
+            Some(&manifest),
+        )?)
+    }
+}
+
+/// Run a fresh snapshot; producer stdout/stderr is deliberately not retained.
+/// Missing offline dependencies fail explicitly. There is no network fallback.
+pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
+    let analyzer = configured("AST_INDEX_SEMANTIC_RUST_ANALYZER")?;
+    let cargo = configured("AST_INDEX_SEMANTIC_CARGO")?;
+    let rustc = configured("AST_INDEX_SEMANTIC_RUSTC")?;
+    let closure = configured("AST_INDEX_SEMANTIC_CLOSURE")?;
+    let snapshot = Snapshot::new(root, state, Profile::Rust)?;
+    let environment = [
+        ("CARGO_HOME", "/tmp/cargo".to_owned()),
+        ("CARGO_NET_OFFLINE", "true".to_owned()),
+        ("CARGO_TARGET_DIR", "/tmp/target".to_owned()),
+        (
+            "PATH",
+            format!(
+                "{}:{}",
+                cargo.parent().context("cargo directory")?.display(),
+                rustc.parent().context("rustc directory")?.display()
+            ),
+        ),
+    ];
+    let metadata = snapshot
+        .command(&closure, &environment)?
         .arg(&cargo)
         .args(["metadata", "--offline", "--locked", "--format-version", "1"])
         .status()?;
@@ -247,7 +360,8 @@ pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
         metadata.success(),
         "offline Cargo metadata failed; dependencies/configuration unavailable (no project diagnostics retained)"
     );
-    let produced = sandbox_command()?
+    let produced = snapshot
+        .command(&closure, &environment)?
         .arg(&analyzer)
         .args([
             "scip",
@@ -263,40 +377,36 @@ pub fn rust(root: &Path, state: &Path) -> Result<crate::scip::ImportStats> {
         produced.success(),
         "sandboxed Rust producer failed or timed out (no project diagnostics retained)"
     );
-    let outputs: Vec<_> = fs::read_dir(&output)?.collect::<std::io::Result<_>>()?;
-    ensure!(
-        outputs.len() == 1 && outputs[0].file_name() == "index.scip",
-        "producer wrote unexpected output; artifact discarded"
-    );
-    if inputs(&root, &state)? != files {
-        bail!("project inputs changed during semantic generation; artifact discarded");
-    }
-    let artifact = output.join("index.scip");
-    let bytes = read(&artifact, 4 * 1024 * 1024)?;
-    let manifest = output.join("manifest.json");
-    let hashes: BTreeMap<_, _> = files
-        .iter()
-        .map(|(path, bytes)| (path, blake3::hash(bytes).to_hex().to_string()))
-        .collect();
-    write(
-        &manifest,
-        &serde_json::to_vec(&serde_json::json!({
-            "artifact_blake3":blake3::hash(&bytes).to_hex().to_string(), "files":hashes
-        }))?,
-    )?;
-    let engine = crate::Engine::open_state_dir(&root, &state)?;
-    engine.index(&crate::IndexOptions::default())?;
-    Ok(crate::scip::import(
-        &root,
-        engine.store(),
-        &artifact,
-        Some(&manifest),
-    )?)
+    snapshot.import()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typescript_inputs_include_config_and_locks_but_exclude_runtime_and_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in [
+            "tsconfig.json",
+            "tsconfig.base.json",
+            "package.json",
+            "pnpm-lock.yaml",
+            "source.ts",
+            "private.json",
+            "script.js",
+        ] {
+            fs::write(root.join(file), "{}").unwrap();
+        }
+        let files = inputs(root, &root.join("state"), Profile::TypeScript).unwrap();
+        assert_eq!(files.len(), 5);
+        assert!(!files.contains_key("private.json") && !files.contains_key("script.js"));
+        std::os::unix::fs::symlink("private.json", root.join("linked.ts")).unwrap();
+        assert!(inputs(root, &root.join("state"), Profile::TypeScript).is_err());
+        fs::remove_file(root.join("linked.ts")).unwrap();
+        fs::write(root.join("line\nbreak.ts"), "{}").unwrap();
+        assert!(inputs(root, &root.join("state"), Profile::TypeScript).is_err());
+    }
     #[test]
     fn snapshot_rejects_config_symlinks_and_public_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -305,15 +415,15 @@ mod tests {
         fs::write(root.join("Cargo.lock"), "version = 4").unwrap();
         fs::write(root.join("private.json"), "PRIVATE_CANARY").unwrap();
         fs::write(root.join("lib.rs"), "fn f() {}").unwrap();
-        let files = inputs(root, &root.join("state")).unwrap();
+        let files = inputs(root, &root.join("state"), Profile::Rust).unwrap();
         assert_eq!(files.len(), 3);
         assert!(!files.contains_key("private.json"));
         std::os::unix::fs::symlink("private.json", root.join("linked.rs")).unwrap();
-        assert!(inputs(root, &root.join("state")).is_err());
+        assert!(inputs(root, &root.join("state"), Profile::Rust).is_err());
         fs::remove_file(root.join("linked.rs")).unwrap();
         fs::create_dir(root.join(".cargo")).unwrap();
         fs::write(root.join(".cargo/config.toml"), "[build]").unwrap();
-        assert!(inputs(root, &root.join("state")).is_err());
+        assert!(inputs(root, &root.join("state"), Profile::Rust).is_err());
         let state = root.join("state");
         private_directory(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();

@@ -15,7 +15,7 @@ use std::{
     path::Path,
 };
 pub(crate) mod calls;
-mod wire;
+pub(crate) mod wire;
 
 const ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
 const SOURCE_BYTES: u64 = 128 * 1024 * 1024;

@@ -11,7 +11,7 @@ imports, extraction/resolution fingerprints, schema version 9 and SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-76 unit, 58 integration, 5 quality tests and two real sandboxed producer
+79 unit, 58 integration, 6 quality tests and three real sandboxed producer
 tests, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
@@ -29,7 +29,8 @@ Exact reference ranges re-extract legacy rows. The Rust corpus freezes 101
 eligible calls plus two abstention cases; TypeScript freezes 100 plus three.
 Oracle self-tests verify accounting and failure thresholds; a separate real Rust
 acceptance test passes with 101 correct targets, no wrong targets and two dynamic
-abstentions. TypeScript semantic acceptance remains open. Both corpora typecheck
+abstentions. TypeScript definition navigation passes all 100 labelled locations;
+its separate static-dispatch acceptance remains open. Both corpora typecheck
 without project dependencies. Generic-call,
 constructor and commented-path regressions cover extraction and lexical scope.
 Manifest inputs make configuration/lock changes exclude stale evidence. Schema 9
@@ -40,6 +41,11 @@ regressions pass, as does CLI/MCP parity across all supported combined actions.
 The separate Rust producer uses a private snapshot and an offline
 Bubblewrap process; its build-script/proc-macro CLI paths are disabled in the
 pinned producer source. A real canary test verifies build scripts do not execute.
+The TypeScript adapter uses the pinned native compiler LSP, with a separate tool
+closure and no package manager/network access. It disables automatic type
+acquisition and telemetry, requires a no-emit check, caps protocol data and checks
+all input bytes before import. UTF-8/CRLF, same-line locations, config freshness,
+missing dependencies and private temporary-state cleanup have real runtime tests.
 
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining

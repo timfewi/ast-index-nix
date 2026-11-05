@@ -4,6 +4,90 @@ use ast_index::{Engine, producer, query::Query};
 use std::fs;
 
 #[test]
+fn typescript_producer_uses_native_definitions_without_scripts_or_installation() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("project");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("tsconfig.json"),r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"},"include":["main.ts"]}"#).unwrap();
+    fs::write(
+        root.join("unloaded.ts"),
+        "export function skipped() {} export function offcaller() { skipped(); }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("ops.ts"),
+        "export function /* 😀 */ target():number {return 1;}\r\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("main.ts"),
+        "import {target} from './ops'; export function caller() {const marker = '😀'; return target()+target();}\r\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"synthetic-typescript","scripts":{"prepare":"touch /output/script-ran"}}"#,
+    )
+    .unwrap();
+    fs::write(root.join("private.json"), "SYNTHETIC_PRIVATE_CANARY").unwrap();
+    let state = directory.path().join("state");
+    let stats = producer::typescript(&root, &state).unwrap();
+    assert_eq!(stats.documents, 2);
+    assert_eq!(stats.occurrences, 3);
+    assert!(fs::read_dir(&state).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("semantic-typescript-")
+    }));
+    let engine = Engine::open_state_dir(&root, &state).unwrap();
+    let query = Query {
+        action: "semantic".into(),
+        query: Some("target".into()),
+        relation: Some("definition".into()),
+        ..Default::default()
+    };
+    let value = engine.execute(&query).unwrap();
+    assert!(!value["items"].as_array().unwrap().is_empty());
+    assert!(!value.to_string().contains("SYNTHETIC_PRIVATE_CANARY"));
+    assert_eq!(
+        value["items"][0]["range"],
+        serde_json::json!([0, 27, 0, 33])
+    );
+    let references = engine
+        .execute(&Query {
+            action: "semantic".into(),
+            query: Some("target".into()),
+            relation: Some("reference".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_ne!(
+        references["items"][0]["range"],
+        references["items"][1]["range"]
+    );
+    fs::write(root.join("package.json"), "{}").unwrap();
+    assert_eq!(
+        engine.execute(&query).unwrap()["excluded"],
+        "stale_semantic_artifact"
+    );
+    fs::write(
+        root.join("main.ts"),
+        "import {missing} from './unavailable_private_canary'; missing();",
+    )
+    .unwrap();
+    let error = producer::typescript(&root, &state).unwrap_err().to_string();
+    assert!(error.contains("offline TypeScript check failed"));
+    assert!(!error.contains("unavailable_private_canary"));
+    assert!(fs::read_dir(&state).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("semantic-typescript-")
+    }));
+}
+
+#[test]
 fn rust_producer_disables_build_scripts_and_discards_artifacts_after_import() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("project");

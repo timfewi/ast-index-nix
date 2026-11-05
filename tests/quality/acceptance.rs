@@ -1,6 +1,6 @@
 //! End-to-end quality uses real producer output and independently authored gold.
 use super::{
-    RUST_CORPUS,
+    RUST_CORPUS, TYPESCRIPT_CORPUS,
     evaluator::{self, Case, Location, Observations},
 };
 use ast_index::{
@@ -184,5 +184,92 @@ fn rust_combined_profile_meets_independent_recall_precision_and_safety_gate() {
                 ..Default::default()
             })
             .is_err()
+    );
+}
+
+/// This verifies definition navigation only. Overridable receivers can still
+/// navigate to a declaration, so these observations must not become call edges.
+#[test]
+fn typescript_producer_definitions_match_the_frozen_navigation_labels() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("project");
+    fs::create_dir_all(root.join("src")).unwrap();
+    for (file, source) in TYPESCRIPT_CORPUS {
+        fs::write(root.join(file), source).unwrap();
+    }
+    fs::write(
+        root.join("tsconfig.json"),
+        include_str!("fixtures/typescript/tsconfig.json"),
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    ast_index::producer::typescript(&root, &state).unwrap();
+    let engine = Engine::open_state_dir(&root, &state).unwrap();
+    let cases = evaluator::parse(TYPESCRIPT_CORPUS).unwrap();
+    let mut observed = Observations::new();
+    let semantic = |relation: &str| {
+        let mut query = Query {
+            action: "semantic".into(),
+            relation: Some(relation.into()),
+            limit: Some(100),
+            ..Default::default()
+        };
+        let mut rows = Vec::new();
+        loop {
+            let result = engine.execute(&query).unwrap();
+            rows.extend(result["items"].as_array().unwrap().iter().cloned());
+            query.cursor = result["next_cursor"].as_str().map(str::to_owned);
+            if query.cursor.is_none() {
+                break;
+            }
+        }
+        rows
+    };
+    let definitions = semantic("definition");
+    for reference in semantic("reference") {
+        for definition in definitions
+            .iter()
+            .filter(|d| d["identity"] == reference["identity"])
+        {
+            observed
+                .entry(Location {
+                    file: reference["file"].as_str().unwrap().into(),
+                    range: serde_json::from_value(reference["range"].clone()).unwrap(),
+                })
+                .or_default()
+                .insert(Location {
+                    file: definition["file"].as_str().unwrap().into(),
+                    range: serde_json::from_value(definition["range"].clone()).unwrap(),
+                });
+        }
+    }
+    let mut correct = 0;
+    for case in cases.iter().filter(|c| c.expected.is_some()) {
+        if observed
+            .get(&case.site)
+            .is_some_and(|actual| actual.contains(case.expected.as_ref().unwrap()))
+        {
+            correct += 1;
+        } else {
+            eprintln!(
+                "typescript/definition missed {}: {:?}",
+                case.id,
+                observed.get(&case.site)
+            );
+        }
+    }
+    eprintln!(
+        "typescript definition navigation: {correct}/100; static-dispatch acceptance is separate"
+    );
+    assert_eq!(correct, 100);
+    assert!(
+        engine
+            .execute(&Query {
+                action: "refs".into(),
+                evidence: Some("combined".into()),
+                ..Default::default()
+            })
+            .is_err(),
+        "raw definition evidence is not yet a supported TypeScript call profile"
     );
 }

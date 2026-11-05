@@ -19,11 +19,22 @@ enum Command {
         #[arg(long)]
         state_dir: PathBuf,
     },
+    /// Refresh one TypeScript project with the pinned offline native compiler.
+    Typescript {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
-    let Command::Rust { root, state_dir } = Cli::parse().command;
-    let stats = ast_index::producer::rust(&root, &state_dir)?;
+    let stats = match Cli::parse().command {
+        Command::Rust { root, state_dir } => ast_index::producer::rust(&root, &state_dir)?,
+        Command::Typescript { root, state_dir } => {
+            ast_index::producer::typescript(&root, &state_dir)?
+        }
+    };
     println!("{}", serde_json::to_string(&stats)?);
     Ok(())
 }

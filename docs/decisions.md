@@ -162,6 +162,17 @@ remain enabled. Custom Cargo configuration and unavailable offline dependencies
 fail closed; no installer or network fallback runs. Snapshot manifests include
 configuration/locks, and raw artifacts are removed after import.
 
+The TypeScript adapter uses the already pinned native compiler's LSP rather than
+adding an npm installer or assuming the old JavaScript compiler API still exists.
+Version 7.0.2's `--lsp --stdio`, UTF-8 negotiation, initialization preferences and
+shutdown paths were checked in the pinned source and exercised locally. Automatic
+type acquisition and telemetry are disabled; only the compiler closure is mounted
+and the executable search path points to a nonexistent directory. After acknowledged shutdown, the adapter
+closes stdin: this version's `exit` notification returns cancellation/status 1,
+whereas its EOF path exits successfully. Nonzero process exits still fail.
+Bounded definition results are encoded as local SCIP evidence with relative
+locations and snapshot hashes. They do not enable TypeScript combined call edges.
+
 The explicit `evidence=combined` view adds validated call targets while retaining
 the AST default. A supported producer/version, exact AST call-token match,
 normalized position encoding and unique same-project static declaration are all

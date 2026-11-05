@@ -320,6 +320,26 @@ The [frozen synthetic Rust corpus](docs/semantic-quality.md#executed-rust-accept
 passes with 101/101 correct targets, zero wrong targets and two dynamic abstentions.
 This is a corpus result, not a blanket accuracy claim for real projects or languages.
 
+TypeScript definition evidence has a separate explicit adapter:
+
+```bash
+ast-index-semantic typescript --root ./project --state-dir ./private-state
+ast-index --root ./project --state-dir ./private-state semantic --relation definition --json
+```
+
+It uses pinned TypeScript 7.0.2's native LSP with UTF-8 positions, after a successful
+`--noEmit` check. Its bounded file list selects only compiler-loaded sources for
+LSP requests, so excluded files cannot re-enter through inferred projects.
+Only TypeScript/TSX sources, `tsconfig*.json`, package manifests
+and recognized dependency locks enter the private snapshot. Runtime JavaScript,
+arbitrary JSON, `node_modules` and user-home files do not. Automatic type
+acquisition and telemetry are disabled; the sandbox has no network or package
+manager on its executable search path. Protocol responses, candidate counts and
+runtime are bounded. Missing dependencies/configuration fail explicitly, without
+retaining diagnostics. The synthetic corpus yields 100/100 correct definition
+locations. TypeScript `combined` call evidence remains unavailable until its
+separate dispatch/safety validator passes; definition navigation is not that proof.
+
 ## Resource limits and local state
 
 Normal indexing caps source files at 2 MiB each, scans at 100,000 source files and

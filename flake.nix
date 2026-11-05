@@ -36,6 +36,7 @@
               pkgs.rustc
             ];
           };
+          typescriptClosure = pkgs.closureInfo { rootPaths = [ pkgs.typescript ]; };
         in
         {
           AST_INDEX_SEMANTIC_BWRAP = "${pkgs.bubblewrap}/bin/bwrap";
@@ -44,6 +45,8 @@
           AST_INDEX_SEMANTIC_CARGO = "${pkgs.cargo}/bin/cargo";
           AST_INDEX_SEMANTIC_RUSTC = "${pkgs.rustc}/bin/rustc";
           AST_INDEX_SEMANTIC_CLOSURE = "${closure}/store-paths";
+          AST_INDEX_SEMANTIC_TYPESCRIPT = "${pkgs.typescript}/bin/tsc";
+          AST_INDEX_SEMANTIC_TYPESCRIPT_CLOSURE = "${typescriptClosure}/store-paths";
         };
       semanticExports =
         pkgs:

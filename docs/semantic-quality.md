@@ -1,8 +1,8 @@
 # Private semantic evidence and the 90% target
 
-Exact positions, independent Rust/TypeScript corpora, an explicit offline Rust
-producer and a validated Rust call overlay are implemented. The Rust profile
-passes the frozen synthetic corpus; TypeScript producer/dispatch acceptance,
+Exact positions, independent Rust/TypeScript corpora, explicit offline Rust and
+TypeScript producers and a validated Rust call overlay are implemented. The Rust profile
+passes the frozen synthetic corpus; TypeScript dispatch acceptance,
 dependency provisioning and host refresh integration remain open. This does not
 establish the target on arbitrary projects, other languages or the full plan.
 Keep the existing offline AST engine; add locally produced semantic evidence
@@ -65,9 +65,21 @@ does not establish the same recall on arbitrary projects or languages.
   LSP settings do not disable those hardcoded CLI paths in this producer version.
   An executable synthetic build-script canary, real SCIP import, temporary-output
   cleanup and lockfile invalidation pass. Custom Cargo configuration and missing
-  offline dependencies fail explicitly. Dependency-cache provisioning and further
-  producer profiles remain unimplemented. The producer smoke alone is not an
+  offline dependencies fail explicitly. Dependency-cache provisioning remains
+  unimplemented. The producer smoke alone is not an
   accuracy result; the independent end-to-end acceptance below supplies that.
+- [The TypeScript adapter](../src/producer/typescript.rs) uses the pinned native
+  TypeScript 7.0.2 LSP, not a JavaScript compiler API or installed project plugin.
+  It negotiates UTF-8, disables telemetry/automatic type acquisition, checks
+  with no emit, and has no network or package manager in its closure/search path.
+  It shares private snapshot, input verification and cleanup with Rust. Protocol
+  framing and aggregate responses, 10,000 call sites, 16 candidates per site and
+  120 seconds per child bound the adapter. Definition navigation passes 100/100
+  independently labelled eligible locations in the corpus frozen at `2c24bac`.
+  Only sources in the compiler's bounded file list are opened; excluded sources
+  do not become inferred LSP projects. Unicode/CRLF, same-line locations, source/config changes and missing-dependency
+  cleanup are covered separately. This does not establish static dispatch:
+  TypeScript combined-call queries remain unsupported until that gate is met.
 - [The call overlay](../src/scip/calls.rs) joins an exact AST call range to a
   semantic occurrence and a unique declaration name token in the same project.
   Rust free functions, inherent methods and tuple constructors are admitted;
@@ -122,7 +134,8 @@ dynamic trait receivers, unknown attributes on declarations/enclosing modules/
 callers, and cfg-disabled/unloaded targets.
 The independent all-reference baseline remains 21 linked AST calls out of 103
 and zero linked imports out of eight (21/111 overall, about 18.9%); status keeps
-that metric separate. TypeScript has no executed semantic acceptance result yet.
+that metric separate. TypeScript definition navigation passes, but its call-target
+recall/precision/safety acceptance remains open.
 
 ## Implementation order and exit criteria
 

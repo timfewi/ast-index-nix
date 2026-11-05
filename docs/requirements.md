@@ -93,9 +93,11 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 The proposed implementation sequence and privacy boundary are in
 [semantic-quality.md](semantic-quality.md). Positions, synthetic corpora and the
 offline Rust runner and opt-in validated Rust calls are implemented. The frozen
-Rust corpus passes the recall/precision gate; TypeScript producer/acceptance and
+Rust corpus passes the recall/precision gate; TypeScript call-dispatch acceptance and
 general project dependency provisioning remain open. A producer smoke alone
 does not establish accuracy, and the corpus result is not an arbitrary-project claim.
+The offline TypeScript adapter passes definition navigation for all 100 labelled
+eligible sites; this is separate from its still-unimplemented call overlay.
 
 A 90%+ target needs a versioned, independently labelled corpus of internal
 statically resolvable references, per language. Measure recall against its expected

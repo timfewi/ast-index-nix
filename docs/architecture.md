@@ -21,6 +21,10 @@ requests, project execution, package discovery commands or Nix evaluation.
   validation, snapshot-consistent queries and compact text output.
 - `scip.rs`, `scip/wire.rs`, `scip/calls.rs`: bounded semantic-artifact ingestion
   and an opt-in validated call overlay, separate from the unchanged AST graph.
+- `producer.rs`, `producer/typescript.rs`: explicit shared private snapshots and
+  offline sandbox commands; Rust SCIP and native TypeScript LSP adapters. Neither
+  adapter is invoked by a query. TypeScript definitions remain raw evidence until
+  a separate static-dispatch profile is validated.
 - `main.rs`, `rpc.rs`, `serve.rs`: transport adaptation, protocol negotiation,
   bounded framing, socket ownership and byte-preserving proxy.
 
