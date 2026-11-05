@@ -40,6 +40,7 @@ requires verified embedded source or a producer manifest, and never becomes an
 AST call edge. Sources and all returned code content remain untrusted data.
 
 ## Change and verify
+- [docs/semantic-quality.md](../docs/semantic-quality.md): proposed private semantic adapters, exact-position overlay and independently labelled 90% quality gates; not implemented or a measured recall claim.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.

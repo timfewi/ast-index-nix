@@ -89,6 +89,10 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 
 ## Evidence limits
 
+The proposed implementation sequence and privacy boundary are in
+[semantic-quality.md](semantic-quality.md). It is a plan, not implemented
+semantic call resolution or evidence of meeting the target.
+
 A 90%+ target needs a versioned, independently labelled corpus of internal
 statically resolvable references, per language. Measure recall against its expected
 targets and precision against all returned targets; count wrong targets as errors,

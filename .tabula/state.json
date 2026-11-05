@@ -1,11 +1,12 @@
 {
   "version": 3,
-  "entry_sha256": "e1e9a29428c349cc71cf519cdcb3ebea0d96b374aab55c8b0f2cafe1f78c9ba1",
+  "entry_sha256": "e7c86a722414519f5cd40dc7fbcd8e3306814e1dd4cee59493196c6b3390612e",
   "sources": {
     "docs/architecture.md": "96ee53f6af472a1e4586a67308695c0f3c36c9cfce73d3713676434b13c98a5a",
     "docs/decisions.md": "759905195c7a3f4bf3eb99bdfa421a660ce56067e973d1df3602e5ec3f9c4584",
     "docs/development.md": "aac6ee026d23cd803e217f0a08ad29b93316966b0c9f5a5f0301e01d2d8a2265",
-    "docs/requirements.md": "93d591befb04e76b49dd0a4a550df92796518b259ab26c09f83b654743dd2c64",
+    "docs/requirements.md": "e58dcc711def62a4a13144a836b07d074bc62ffcd40fd5a72302f1fb6098f51e",
+    "docs/semantic-quality.md": "13279304eac4d3680f329ae6eaa64604b85c9d549311b47151981e5b3e6c4b2a",
     "src/engine.rs": "e9aae1b7d3e4a775e6ae2ace6f52160eba7f7c637941f956c0e15fb29e6fb639",
     "src/imports.rs": "785870eda9ac2f29dee5c630a963e9027bec61c728581c13d275ed24a1accf2f",
     "src/index.rs": "9d4c85846d5fc8ccfdafb77c42dc1db54c18a0a1d095ad07176bfe046e3100e3",
@@ -34,7 +35,7 @@
   "cards": {
     "entry": {
       "path": ".tabula/ENTRY.md",
-      "sha256": "e1e9a29428c349cc71cf519cdcb3ebea0d96b374aab55c8b0f2cafe1f78c9ba1",
+      "sha256": "e7c86a722414519f5cd40dc7fbcd8e3306814e1dd4cee59493196c6b3390612e",
       "sections": {
         "entry/1-ast-index-nix-1": {
           "fingerprint": "62088369b5f3173216147e2a48a479e5bede949920b692b8a10dff333031d42c",
@@ -73,9 +74,10 @@
           "sources": {}
         },
         "entry/2-change-and-verify-1": {
-          "fingerprint": "9bfe4c6585953a7d0bd1bd33f94932d775fe195b2839769a31e618af21f76f4d",
+          "fingerprint": "f2135bdd3a453e857e049ebc8e333f73b99d5652cdfc4fdff784bb355aa7ef24",
           "sources": {
-            "docs/requirements.md": "93d591befb04e76b49dd0a4a550df92796518b259ab26c09f83b654743dd2c64",
+            "docs/semantic-quality.md": "13279304eac4d3680f329ae6eaa64604b85c9d549311b47151981e5b3e6c4b2a",
+            "docs/requirements.md": "e58dcc711def62a4a13144a836b07d074bc62ffcd40fd5a72302f1fb6098f51e",
             "docs/architecture.md": "96ee53f6af472a1e4586a67308695c0f3c36c9cfce73d3713676434b13c98a5a",
             "docs/decisions.md": "759905195c7a3f4bf3eb99bdfa421a660ce56067e973d1df3602e5ec3f9c4584",
             "docs/development.md": "aac6ee026d23cd803e217f0a08ad29b93316966b0c9f5a5f0301e01d2d8a2265",
