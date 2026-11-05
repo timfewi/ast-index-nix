@@ -12,6 +12,7 @@ pub mod index;
 pub mod lang;
 pub mod model;
 pub mod parse;
+pub mod producer;
 pub mod query;
 pub mod report;
 pub mod resolve;

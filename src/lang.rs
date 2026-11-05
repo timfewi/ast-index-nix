@@ -236,6 +236,8 @@ const TYPESCRIPT_TAGS: &str = r#"
 (variable_declarator name: (identifier) @name value: (function_expression)) @definition.function
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
+(new_expression constructor: (identifier) @name) @reference.call
+(new_expression constructor: (member_expression property: (property_identifier) @name)) @reference.call
 (import_statement source: (string) @name) @reference.import
 (call_expression function: (import) arguments: (arguments (_) @name)) @reference.import
 "#;
@@ -248,6 +250,8 @@ const JAVASCRIPT_TAGS: &str = r#"
 (variable_declarator name: (identifier) @name value: (function_expression)) @definition.function
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
+(new_expression constructor: (identifier) @name) @reference.call
+(new_expression constructor: (member_expression property: (property_identifier) @name)) @reference.call
 (import_statement source: (string) @name) @reference.import
 (call_expression function: (import) arguments: (arguments (_) @name)) @reference.import
 "#;

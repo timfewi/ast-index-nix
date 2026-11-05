@@ -14,12 +14,42 @@ const RUST_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+const TYPESCRIPT_CORPUS: &[(&str, &str)] = &[
+    (
+        "src/main.ts",
+        include_str!("quality/fixtures/typescript/src/main.ts"),
+    ),
+    (
+        "src/ops.ts",
+        include_str!("quality/fixtures/typescript/src/ops.ts"),
+    ),
+    (
+        "src/facade.ts",
+        include_str!("quality/fixtures/typescript/src/facade.ts"),
+    ),
+];
+
 #[test]
 fn rust_gold_labels_cover_distinct_calls_and_negative_cases() {
+    validate_corpus(RUST_CORPUS, "rust", 101, 2);
+}
+
+#[test]
+fn typescript_gold_labels_cover_distinct_calls_and_negative_cases() {
+    validate_corpus(TYPESCRIPT_CORPUS, "typescript", 100, 3);
+}
+
+fn validate_corpus(files: &[(&str, &str)], language: &str, eligible: usize, denied: usize) {
     use std::collections::{BTreeMap, BTreeSet};
-    let cases = evaluator::parse(RUST_CORPUS).unwrap();
-    assert_eq!(cases.iter().filter(|c| c.expected.is_some()).count(), 101);
-    assert_eq!(cases.iter().filter(|c| c.expected.is_none()).count(), 2);
+    let cases = evaluator::parse(files).unwrap();
+    assert_eq!(
+        cases.iter().filter(|c| c.expected.is_some()).count(),
+        eligible
+    );
+    assert_eq!(
+        cases.iter().filter(|c| c.expected.is_none()).count(),
+        denied
+    );
     let mut families = BTreeMap::<_, usize>::new();
     for case in &cases {
         *families.entry(&case.family).or_default() += 1;
@@ -28,9 +58,9 @@ fn rust_gold_labels_cover_distinct_calls_and_negative_cases() {
     assert_eq!(families.get(&"heldout".to_string()), Some(&10));
     let labelled: BTreeSet<_> = cases.iter().map(|c| c.site.clone()).collect();
     let mut extracted = BTreeSet::new();
-    for (file, source) in RUST_CORPUS {
+    for (file, source) in files {
         let parsed =
-            ast_index::parse::parse(source, ast_index::lang::by_id("rust").unwrap()).unwrap();
+            ast_index::parse::parse(source, ast_index::lang::by_id(language).unwrap()).unwrap();
         assert!(!parsed.has_errors, "{file}");
         for reference in parsed
             .refs

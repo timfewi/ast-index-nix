@@ -11,14 +11,16 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/store.rs](../src/store.rs), [src/store/query.rs](../src/store/query.rs), [src/store/history.rs](../src/store/history.rs): additive schema, writer lock, SQL projections, bounded traversal and two structural snapshots.
 - [src/query.rs](../src/query.rs), [src/engine.rs](../src/engine.rs), [src/report.rs](../src/report.rs): shared contracts, validation, cursors and text.
 - [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs): optional local SCIP import with independent provenance and source verification.
+- [src/producer.rs](../src/producer.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private Rust snapshot runner, offline Bubblewrap/tool closure and patched SCIP producer; no invocation from core queries.
 - [src/main.rs](../src/main.rs), [src/rpc.rs](../src/rpc.rs), [src/serve.rs](../src/serve.rs): CLI, single-tool MCP and socket/proxy adapters.
 
 ## Interfaces and limits
 `code_explore` actions: status, freshness, search, outline, describe, callers,
 callees, impact, refs, imports, importers, deps, map, changes, diff, semantic.
-CLI also owns explicit `index` and `import-scip` mutations. Schema 7 persists
+CLI also owns explicit `index` and `import-scip` mutations. Schema 8 persists
 zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
-reindexing. Rust generic-call wrappers and path trivia preserve callable identity.
+reindexing. Manifest inputs include configuration/lock hashes. Rust generic-call
+wrappers/path trivia and JS/TS constructor expressions retain call positions.
 Query file/name and
 optional line/column select symbols. Lists use generation-bound pages.
 Languages: Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go, Lua and
@@ -43,8 +45,9 @@ requires verified embedded source or a producer manifest, and never becomes an
 AST call edge. Sources and all returned code content remain untrusted data.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): private semantic adapter/overlay plan; positions implemented, producer recall unverified.
-- [Rust oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs): synthetic labels independent of producers; threshold, wrong-target and absent-producer self-tests are not a passed 90% semantic gate.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): private semantic adapter/overlay plan; explicit Rust runner implemented, semantic calls and producer recall unverified.
+- [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent synthetic labels; scorer self-tests are not a passed 90% semantic gate.
+- [Producer smoke](../tests/producer.rs): real offline SCIP import, build-script canary, temporary artifact cleanup and lockfile invalidation; missing dependencies/config support remain explicit gaps.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.

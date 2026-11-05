@@ -1,7 +1,8 @@
 # Private semantic evidence and the 90% target
 
-The position-storage foundation and Rust oracle are implemented; producers,
-semantic call overlays, TypeScript corpus and the quality gate remain planned.
+Exact positions, independent Rust/TypeScript corpora and an explicit offline
+Rust producer are implemented. Semantic call overlays, the TypeScript producer
+and the recall/precision acceptance gate remain planned.
 This is not a claim that the target has been achieved.
 Keep the existing offline AST engine; add locally produced semantic evidence
 through an explicit adapter. Do not train a model, upload source, or copy a
@@ -39,7 +40,8 @@ does not establish the same recall on arbitrary projects or languages.
   validation and source-snapshot checks. Producer arguments and hover text are
   not persisted. Semantic evidence currently stays separate from AST edges.
 - [Reference storage](../src/store.rs) persists zero-based half-open UTF-8
-  syntax ranges in schema 7. All extractors supply ranges; legacy rows retain
+  syntax ranges since schema 7. Schema 8 also retains manifest input hashes.
+  All extractors supply ranges; legacy rows retain
   null until re-extraction. CLI/MCP tests cover Unicode, CRLF, nested and
   same-line calls across eight languages. Rust generic-call extraction is
   included; range storage alone does not establish a semantic target.
@@ -49,8 +51,22 @@ does not establish the same recall on arbitrary projects or languages.
   synthetic code. The evaluator tests failed producer, recall, precision and
   safety outcomes independently. This validates the oracle, not a producer's
   recall. Producer answers must never replace expected labels to make it pass.
+- The TypeScript oracle freezes 100 eligible calls across ten families and
+  three abstention cases, including typed-but-overridable receivers. It
+  typechecks with the pinned TypeScript compiler. JS/TS constructor expressions
+  now have exact AST call ranges; this fixes a demonstrated extraction gap.
+- [The Rust runner](../src/producer.rs) runs the pinned, patched rust-analyzer
+  2026-09-21 in Bubblewrap with only its tool closure, a read-only selected source
+  snapshot and private output. Network and user-home access are absent. Its SCIP
+  entrypoint has build-script and proc-macro loading disabled in source; ordinary
+  LSP settings do not disable those hardcoded CLI paths in this producer version.
+  An executable synthetic build-script canary, real SCIP import, temporary-output
+  cleanup and lockfile invalidation pass. Custom Cargo configuration and missing
+  offline dependencies fail explicitly. Dependency-cache provisioning and further
+  producer profiles remain unimplemented. This is not an accuracy result.
 - Import replaces the previous semantic artifact. Queries check all imported
-  documents, with a 2,000-document bound; artifacts are capped at 4 MiB. This
+  documents and supplied configuration/lock inputs, with a combined 2,000-file
+  bound; artifacts are capped at 4 MiB. This
   is not yet an incremental semantic service for an entire multi-repo workspace.
 - A local synthetic Rust smoke using rust-analyzer 2026-09-21 produced SCIP for
   `value.tick()` where `value: &Counter`. AST resolution abstained; SCIP attached

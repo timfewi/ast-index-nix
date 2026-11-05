@@ -6,12 +6,13 @@ Bash/Shell, Go, Lua and PostgreSQL-oriented SQL support is implemented through
 the existing CLI/MCP query engine. Language adapters live in
 `src/parse/{bash,go,lua,sql}.rs`; Go package resolution is in `src/resolve/go.rs`.
 Shared changes cover shebang detection, bounded and hashed `go.mod` metadata,
-imports, extraction/resolution fingerprints, schema version 7 and SQL
+imports, extraction/resolution fingerprints, schema version 8 and SQL
 `dependency` references separate from call edges. Astro and embedded shell/SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-69 unit, 56 integration and 3 quality-oracle tests, formatting, Clippy (`-D warnings`), deadnix,
+71 unit, 57 integration, 4 quality-oracle tests and one real sandboxed producer
+test, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
 order/builtin shadowing, Lua mutation, SQL namespaces/CTEs/owners, shared read
@@ -24,11 +25,15 @@ exact targets and conservative negative cases with the new one. Status separates
 link coverage by language and reference kind, including unresolved reasons;
 CLI and MCP JSON agree. These counts are not semantic recall or accuracy.
 
-Schema 7 persists exact reference ranges and re-extracts legacy rows. The Rust
-quality corpus freezes 101 eligible calls plus two abstention cases; its oracle
-tests verify accounting and failure thresholds, not achieved semantic recall.
-The corpus also typechecks offline without dependencies. Generic-call and
-commented-path regressions preserve explicit receivers and lexical resolution.
+Exact reference ranges re-extract legacy rows. The Rust corpus freezes 101
+eligible calls plus two abstention cases; TypeScript freezes 100 plus three.
+Oracle tests verify accounting and failure thresholds, not achieved semantic
+recall. Both corpora typecheck without project dependencies. Generic-call,
+constructor and commented-path regressions cover extraction and lexical scope.
+Schema 8 tracks additional manifest inputs so configuration/lock changes exclude
+stale evidence. The separate Rust producer uses a private snapshot and an offline
+Bubblewrap process; its build-script/proc-macro CLI paths are disabled in the
+pinned producer source. A real canary test verifies build scripts do not execute.
 
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining
@@ -37,7 +42,9 @@ regression failed before its fix and passed in the final fast gate.
 
 Requirements and remaining static-analysis limits are recorded in
 [requirements.md](requirements.md). Local documentation links and final diffs
-were checked. No Nix package builds, VM tests or host activation were performed.
+were checked. The patched Rust producer Nix package was built with its existing
+upstream checks; the x86_64-linux semantic runner package was built and exercised
+on the synthetic Rust corpus. No VM tests or host activation were performed.
 Module evaluation fixtures explicitly set `system.stateVersion` to avoid implicit defaults.
 
 ## Environment

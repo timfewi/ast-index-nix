@@ -36,7 +36,7 @@ Literal file import
 targets are separate from symbol call targets. SQL adds `table`/`view` symbol
 kinds and `dependency` references without treating relations as function calls.
 
-Schema version 6 upgrades older derived state additively. Extraction fingerprint
+Schema version 8 upgrades older derived state additively. Extraction fingerprint
 changes force reparsing even if file bytes have not changed. Existing incomplete
 snapshots that lack position information are marked unsuitable for comparison.
 Unknown newer schemas are rejected. An existing database is bound to its indexed
@@ -159,8 +159,9 @@ files; symlink components and root escapes are rejected. The artifact's root URI
 is validated as local metadata and is never followed.
 
 Embedded text or an artifact-bound producer manifest must establish source hashes.
-All participating source bytes are rechecked on semantic queries; a changed or
-missing document excludes the artifact's results. Producer names, versions and
+All participating source bytes and supplied manifest inputs (including project
+configuration/locks) are rechecked on semantic queries; a changed or missing
+input excludes the artifact's results. Producer names, versions and
 artifact digests remain attached to semantic evidence. Arguments and documentation
 from producer metadata are not persisted. References never become inferred call
 edges, and implementation relationships require the explicit SCIP flag.

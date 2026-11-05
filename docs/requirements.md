@@ -27,7 +27,7 @@ The current fast gate and remaining coverage limits are recorded in
 | R18 | Byte-preserving stdio↔socket proxy as the only harness-facing process | done | `integration::socket_service_and_stdio_proxy_share_one_index`, `integration::socket_proxy_preserves_crlf_bytes` |
 | R19 | MCP frames are bounded at 1 MiB and tool text at 64 KiB | done | `integration::mcp_stdio_rejects_oversized_frame_and_serves_the_next_request`, `integration::socket_service_and_stdio_proxy_share_one_index`, `rpc::tests::tool_text_is_bounded_even_when_arguments_are_large` |
 | R20 | Index state is one SQLite file, WAL requested with rollback fallback | done | `Store::open` records `journal_mode` in `meta` |
-| R21 | Nix package and NixOS module with socket service | done | both-system package/module evaluation in the fast gate; native Rust compilation and process tests (no Nix package build in this expansion) |
+| R21 | Nix package and NixOS module with socket service | done | both-system package/module evaluation; native process tests; x86_64-linux package/semantic-runner builds and wrapper smoke |
 | R22 | No network access and no LLM dependency at runtime | done | source and runtime dependency review, including local-only `prost` decoding |
 | R23 | Documented fast gate runs formatting, clippy, tests and Nix/Shell checks | done | `scripts/check fast` |
 | R24 | gitignore-style path exclusions keep configured subtrees out of the index | done | `integration::exclude_patterns_skip_subtrees` |
@@ -85,13 +85,16 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 - Runtime shell working directories, Lua module loaders and SQL search paths.
 - Rename/codemods, source write actions, project execution and runtime networking.
 - Multiple roots in one database; one root keeps writer and path semantics clear.
-- Starting SCIP producers, language servers or build tools.
+- Starting producers, language servers or build tools from core indexing/queries.
+  The separate explicit Rust producer runner is documented in the README.
 
 ## Evidence limits
 
 The proposed implementation sequence and privacy boundary are in
-[semantic-quality.md](semantic-quality.md). It is a plan, not implemented
-semantic call resolution or evidence of meeting the target.
+[semantic-quality.md](semantic-quality.md). Positions, synthetic corpora and the
+offline Rust runner are implemented; semantic call resolution and the per-language
+recall/precision gate remain open. Neither those foundations nor a passing producer
+smoke establish that the quality target is met.
 
 A 90%+ target needs a versioned, independently labelled corpus of internal
 statically resolvable references, per language. Measure recall against its expected

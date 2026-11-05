@@ -15,7 +15,7 @@ mod history;
 mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,7 +294,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_snapshot_identity ON snapshot_symbols(generation,identity);
             CREATE TABLE IF NOT EXISTS snapshot_edges(generation INTEGER NOT NULL, caller INTEGER, callee INTEGER NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, reason TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_snapshot_callers ON snapshot_edges(generation,callee);")?;
-        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS semantic_documents(file TEXT PRIMARY KEY, hash TEXT NOT NULL, artifact TEXT NOT NULL, indexer TEXT NOT NULL, indexer_version TEXT NOT NULL, encoding INTEGER NOT NULL);
+        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS semantic_inputs(file TEXT PRIMARY KEY, hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS semantic_documents(file TEXT PRIMARY KEY, hash TEXT NOT NULL, artifact TEXT NOT NULL, indexer TEXT NOT NULL, indexer_version TEXT NOT NULL, encoding INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS semantic_occurrences(id INTEGER PRIMARY KEY, file TEXT NOT NULL REFERENCES semantic_documents(file) ON DELETE CASCADE,
                 identity TEXT NOT NULL, symbol TEXT NOT NULL, display_name TEXT NOT NULL, role INTEGER NOT NULL, range TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_semantic_symbol ON semantic_occurrences(symbol);

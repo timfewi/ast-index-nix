@@ -6,6 +6,7 @@ case "${1:-fast}" in
     cargo fmt --all -- --check
     cargo clippy --offline --all-targets --all-features -- -D warnings
     cargo test --offline
+    tsc --project tests/quality/fixtures/typescript/tsconfig.json
     deadnix --fail .
     statix check .
     nixfmt --check flake.nix devenv.nix nix/module.nix tests/nix/module-eval.nix

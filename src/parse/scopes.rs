@@ -261,7 +261,7 @@ pub(super) fn apply(
                 }
             }
         }
-        if matches!(kind, "call" | "call_expression") {
+        if matches!(kind, "call" | "call_expression" | "new_expression") {
             locations.insert(node.start_byte(), scope);
         }
         let mut cursor = node.walk();
@@ -292,20 +292,23 @@ pub(super) fn apply(
         else {
             continue;
         };
-        while !matches!(node.kind(), "call" | "call_expression") {
+        while !matches!(node.kind(), "call" | "call_expression" | "new_expression") {
             let Some(parent) = node.parent() else { break };
             node = parent;
         }
         let Some(&scope) = locations.get(&node.start_byte()) else {
             continue;
         };
-        let function = node.child_by_field_name("function").map(|function| {
-            if function.kind() == "generic_function" {
-                function.child_by_field_name("function").unwrap_or(function)
-            } else {
-                function
-            }
-        });
+        let function = node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("constructor"))
+            .map(|function| {
+                if function.kind() == "generic_function" {
+                    function.child_by_field_name("function").unwrap_or(function)
+                } else {
+                    function
+                }
+            });
         if function.is_some_and(|n| {
             matches!(
                 n.kind(),

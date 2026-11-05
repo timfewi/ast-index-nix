@@ -77,6 +77,30 @@ fn binary() -> PathBuf {
 }
 
 #[test]
+fn constructors_keep_exact_ranges_and_shadowed_targets_unresolved() {
+    let directory = tempfile::tempdir().unwrap();
+    for file in ["main.js", "main.ts"] {
+        std::fs::write(
+            directory.path().join(file),
+            "class Builder {}\nfunction f(Builder) { new Builder(); new ns.Builder(); }\n",
+        )
+        .unwrap();
+    }
+    run_cli_json(directory.path(), &["index", "--json"]);
+    for file in ["main.js", "main.ts"] {
+        let refs = raw_json(
+            directory.path(),
+            &["refs", file, "--kind", "call", "--json"],
+        );
+        let rows = refs["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r["resolved"].is_null()), "{refs}");
+        assert_eq!(rows[0]["range"], serde_json::json!([1, 26, 1, 33]));
+        assert_eq!(rows[1]["range"], serde_json::json!([1, 44, 1, 51]));
+    }
+}
+
+#[test]
 fn reference_ranges_survive_cli_mcp_unicode_crlf_and_same_line_calls() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

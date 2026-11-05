@@ -152,6 +152,17 @@ SCIP flag. Unsupported schema fields are ignored and documented, while unknown
 protocol versions and invalid paths/ranges are rejected. Producer arguments are
 not decoded or persisted.
 
+The separate `ast-index-semantic` runner may explicitly generate evidence for one
+project. It mounts a bounded private source snapshot and the pinned tool closure
+inside Bubblewrap with no network/user-home mount; core queries still never start
+it. The rust-analyzer 2026-09-21 SCIP source hardcodes build-script and proc-macro
+loading, so the package applies two fail-if-missing source replacements disabling
+those paths. Editor settings alone are insufficient. The original upstream checks
+remain enabled. Custom Cargo configuration and unavailable offline dependencies
+fail closed; no installer or network fallback runs. Snapshot manifests include
+configuration/locks, and raw artifacts are removed after import. Semantic call
+promotion still requires the additional validation described in the quality plan.
+
 ## D14 — Language-specific static evidence through one interface
 
 Bash, Go, Lua and PostgreSQL SQL extend the existing pipeline and `code_explore`

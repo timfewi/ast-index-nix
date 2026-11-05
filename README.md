@@ -271,11 +271,33 @@ producer** must supply a manifest generated alongside the artifact:
 
 The importer never manufactures freshness evidence from today's files. Paths
 must be canonical relative paths without symlinks. Artifact root metadata never
-grants filesystem access. All participating source hashes are rechecked during
+grants filesystem access. All supplied manifest inputs, including configuration
+and lockfiles, are validated at import and rechecked together with source during
 semantic queries; any mismatch excludes the artifact's results. Provenance
 includes producer name/version and artifact digest. External-symbol metadata,
 hover documentation, producer arguments and unsupported relationship kinds are
 not imported. Semantic references never become AST call edges.
+
+An explicit Linux Rust producer is available separately:
+
+```bash
+# Select one project; the new state directory needs an existing parent.
+nix run .#semantic-runner -- rust --root ./project --state-dir ./private-state
+ast-index --root ./project --state-dir ./private-state semantic --json
+```
+
+The runner requires private state (0700), a Cargo manifest and existing lockfile.
+It copies only selected Rust/Cargo inputs to temporary private state and invokes
+a pinned rust-analyzer inside Bubblewrap without network or user-home access.
+Only the tool closure and snapshot are mounted. Build-script and proc-macro
+loading are disabled in the producer's SCIP implementation. Each producer stage
+has a 120-second timeout; missing offline dependencies or custom Cargo config
+cause an explicit failure. No dependency installation or network fallback occurs.
+The current profile does not yet provision external dependency caches.
+Snapshot/SCIP files are removed after import, including failure paths; producer
+diagnostics are not retained. Existing semantic data is replaced only after a
+successful validated import. This supplies definition/reference evidence, not
+the planned semantic call overlay or a demonstrated 90% recall result.
 
 ## Resource limits and local state
 

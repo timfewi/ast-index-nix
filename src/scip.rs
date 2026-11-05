@@ -177,6 +177,19 @@ pub fn import(
     {
         return Err(invalid("manifest does not match SCIP artifact digest"));
     }
+    if let Some(manifest) = &manifest {
+        if manifest.files.len() > 2000 {
+            return Err(invalid("semantic input budget exceeded"));
+        }
+        let mut total = 0;
+        for (file, hash) in &manifest.files {
+            let bytes = source(root, file, SOURCE_BYTES.saturating_sub(total))?;
+            total += bytes.len() as u64;
+            if blake3::hash(&bytes).to_hex().as_str() != hash {
+                return Err(invalid("SCIP manifest input does not match current bytes"));
+            }
+        }
+    }
     let index =
         wire::Index::decode(bytes.as_slice()).map_err(|_| invalid("malformed SCIP protobuf"))?;
     let metadata = index
@@ -276,8 +289,19 @@ pub fn import(
     if checked.is_empty() {
         return Err(invalid("SCIP artifact has no documents"));
     }
+    if let Some(manifest) = &manifest {
+        seen.extend(manifest.files.keys().cloned());
+        if seen.len() > 2000 {
+            return Err(invalid("combined semantic document/input budget exceeded"));
+        }
+    }
     store.transaction(|| {
-        store.conn.execute_batch("DELETE FROM semantic_implementations; DELETE FROM semantic_occurrences; DELETE FROM semantic_documents;")?;
+        store.conn.execute_batch("DELETE FROM semantic_implementations; DELETE FROM semantic_occurrences; DELETE FROM semantic_documents; DELETE FROM semantic_inputs;")?;
+        if let Some(manifest) = &manifest {
+            for (file, hash) in &manifest.files {
+                store.conn.execute("INSERT INTO semantic_inputs(file,hash) VALUES(?1,?2)", params![file,hash])?;
+            }
+        }
         let mut stats=ImportStats { documents:checked.len(),occurrences:0,implementations:0,artifact_blake3:digest.clone(),generation:0 };
         for (document,hash) in &checked {
             let file=&document.relative_path;
@@ -309,7 +333,7 @@ pub fn import(
 pub(crate) fn query(root: &Path, store: &Store, query: &Query, window: &Window) -> Result<Value> {
     let documents: Vec<(String, String)> = store
         .conn
-        .prepare("SELECT file,hash FROM semantic_documents ORDER BY file LIMIT 2001")?
+        .prepare("SELECT file,hash FROM semantic_documents UNION SELECT file,hash FROM semantic_inputs ORDER BY file LIMIT 2001")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if documents.is_empty() {
@@ -357,7 +381,8 @@ pub(crate) fn query(root: &Path, store: &Store, query: &Query, window: &Window) 
         "position_encoding":r.get::<_,i32>(8)?,"relation":relation
     })))?.collect::<rusqlite::Result<_>>()?;
     let mut value = serde_json::to_value(window.page(rows)?)?;
-    value["freshness"] = json!("all artifact documents matched current bytes at query time");
+    value["freshness"] =
+        json!("all artifact documents and manifest inputs matched current bytes at query time");
     value["range_convention"] =
         json!("zero-based, half-open; columns use each document's position encoding");
     Ok(value)
@@ -577,6 +602,40 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn manifest_configuration_and_lock_changes_exclude_semantic_evidence() {
+        let (dir, engine, index) = fixture();
+        let artifact = artifact(&dir, &index);
+        let manifest = dir.path().join("manifest.json");
+        for file in ["Cargo.toml", "Cargo.lock"] {
+            let config = dir.path().join(file);
+            std::fs::write(&config, "synthetic snapshot").unwrap();
+            let hashes = json!({"artifact_blake3":blake3::hash(&std::fs::read(&artifact).unwrap()).to_hex().to_string(),
+                "files":{file:blake3::hash(b"synthetic snapshot").to_hex().to_string()}});
+            std::fs::write(&manifest, hashes.to_string()).unwrap();
+            import(dir.path(), engine.store(), &artifact, Some(&manifest)).unwrap();
+            assert_eq!(
+                engine.execute(&request("definition")).unwrap()["items"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            std::fs::write(&config, "changed snapshot").unwrap();
+            let stale = engine.execute(&request("reference")).unwrap();
+            assert_eq!(stale["excluded"], "stale_semantic_artifact");
+            assert_eq!(stale["stale_files"], json!([file]));
+            let generation = engine.store().generation().unwrap();
+            assert!(import(dir.path(), engine.store(), &artifact, Some(&manifest)).is_err());
+            assert_eq!(engine.store().generation().unwrap(), generation);
+            std::fs::remove_file(&config).unwrap();
+            assert_eq!(
+                engine.execute(&request("definition")).unwrap()["excluded"],
+                "stale_semantic_artifact"
+            );
+        }
     }
 
     #[test]
