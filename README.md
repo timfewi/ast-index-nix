@@ -276,7 +276,7 @@ and lockfiles, are validated at import and rechecked together with source during
 semantic queries; any mismatch excludes the artifact's results. Provenance
 includes producer name/version and artifact digest. External-symbol metadata,
 hover documentation, producer arguments and unsupported relationship kinds are
-not imported. Semantic references never become AST call edges.
+not imported. Raw semantic references never overwrite AST call edges.
 
 An explicit Linux Rust producer is available separately:
 
@@ -296,8 +296,29 @@ cause an explicit failure. No dependency installation or network fallback occurs
 The current profile does not yet provision external dependency caches.
 Snapshot/SCIP files are removed after import, including failure paths; producer
 diagnostics are not retained. Existing semantic data is replaced only after a
-successful validated import. This supplies definition/reference evidence, not
-the planned semantic call overlay or a demonstrated 90% recall result.
+successful validated import.
+
+The Rust profile can also supply validated static call targets:
+
+```bash
+ast-index --root ./project --state-dir ./private-state callees caller --evidence combined --json
+ast-index --root ./project --state-dir ./private-state impact Counter::get --evidence combined --json
+ast-index --root ./project --state-dir ./private-state refs --evidence ast --json
+```
+
+`combined` is available for refs, describe, callers, callees and impact in CLI/MCP.
+It requires fresh evidence and the same AST generation/profile; reindexing or
+changing source/configuration requires another explicit producer refresh. AST is
+the default view. Semantic edges include producer/version/artifact provenance;
+unresolved refs expose conflicts, ambiguity and bounded possible-target evidence.
+Calls in the profile's source inputs without semantic confirmation remain
+`semantic_unverified`; cfg-disabled targets cannot reappear through AST fallback.
+Only exact call-token matches and uniquely validated static declarations are
+admitted. Trait dispatch and attribute macros remain unsupported. Imported
+producer metadata describes evidence; it is not authentication of an artifact.
+The [frozen synthetic Rust corpus](docs/semantic-quality.md#executed-rust-acceptance)
+passes with 101/101 correct targets, zero wrong targets and two dynamic abstentions.
+This is a corpus result, not a blanket accuracy claim for real projects or languages.
 
 ## Resource limits and local state
 

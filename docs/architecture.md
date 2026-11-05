@@ -19,8 +19,8 @@ requests, project execution, package discovery commands or Nix evaluation.
   structural snapshots.
 - `query.rs`, `engine.rs`, `report.rs`: shared request/response contracts,
   validation, snapshot-consistent queries and compact text output.
-- `scip.rs`, `scip/wire.rs`: bounded, opt-in local semantic-artifact ingestion;
-  semantic evidence remains separate from AST call edges.
+- `scip.rs`, `scip/wire.rs`, `scip/calls.rs`: bounded semantic-artifact ingestion
+  and an opt-in validated call overlay, separate from the unchanged AST graph.
 - `main.rs`, `rpc.rs`, `serve.rs`: transport adaptation, protocol negotiation,
   bounded framing, socket ownership and byte-preserving proxy.
 
@@ -36,7 +36,7 @@ Literal file import
 targets are separate from symbol call targets. SQL adds `table`/`view` symbol
 kinds and `dependency` references without treating relations as function calls.
 
-Schema version 8 upgrades older derived state additively. Extraction fingerprint
+Schema version 9 upgrades older derived state additively. Extraction fingerprint
 changes force reparsing even if file bytes have not changed. Existing incomplete
 snapshots that lack position information are marked unsuitable for comparison.
 Unknown newer schemas are rejected. An existing database is bound to its indexed
@@ -163,8 +163,15 @@ All participating source bytes and supplied manifest inputs (including project
 configuration/locks) are rechecked on semantic queries; a changed or missing
 input excludes the artifact's results. Producer names, versions and
 artifact digests remain attached to semantic evidence. Arguments and documentation
-from producer metadata are not persisted. References never become inferred call
-edges, and implementation relationships require the explicit SCIP flag.
+from producer metadata are not persisted. Implementation relationships require
+the explicit SCIP flag. The combined graph additionally requires a current call
+validator/runner fingerprint and AST generation. Exact UTF-8 call/definition
+token joins and per-language static-dispatch admission produce separate
+`semantic_calls`; `combined_refs` overlays these without modifying `refs`.
+Conflicts/ambiguity stay unresolved, with bounded possible-target provenance.
+Freshness is checked before every combined query; a stale overlay fails explicitly.
+AST remains the default. The SQL view uses disjoint AST/semantic branches so
+incoming-edge traversal can retain target indexes and the existing work budget.
 
 These checks constrain the service's behavior, not other programs running under
 the same Unix account. File mutations racing a scan can still make its observations

@@ -51,7 +51,7 @@ The current fast gate and remaining coverage limits are recorded in
 | R37 | MCP references, resolution provenance/reasons and coverage counts | done | `list_actions_page_consistently_and_references_explain_dynamic_imports`, shared `Engine::execute` projections |
 | R38 | Deterministic byte-budgeted repository maps with signatures and heuristic labels | done | `maps_and_snapshots_report_actual_structural_changes` |
 | R39 | Explicit changed ranges, two retained snapshots, deleted-symbol impact and unavailable-baseline errors | done | `maps_and_snapshots_report_actual_structural_changes` |
-| R40 | Local opt-in SCIP ingestion, separate provenance and no inferred call edges | done | `scip::tests::semantic_evidence_is_separate_and_excluded_when_source_changes`, CLI/MCP semantic parity |
+| R40 | Local opt-in SCIP ingestion with separate provenance and unchanged AST graph | done | `scip::tests::semantic_evidence_is_separate_and_excluded_when_source_changes`, CLI/MCP semantic parity; explicit Rust combined view additionally tested by `scip::calls::tests::*` |
 | R41 | SCIP source/manifest validation, ranges, paths, versions, symlinks, bounded decoding and atomic rejection | done | remaining `scip::tests::*` |
 | R42 | Parser/query reuse, unchanged-resolution reuse, conservative invalidation and indexed exact/prefix queries | done | `unchanged_scans_skip_resolution_but_project_boundaries_invalidate_it`, `exact_and_prefix_use_indexes_while_contains_is_a_bounded_scan`; parser cache source review |
 | R43 | Default derived-state paths cannot follow source-controlled symlinks | done | `source_controlled_symlinks_cannot_redirect_default_index_writes` |
@@ -92,17 +92,19 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 
 The proposed implementation sequence and privacy boundary are in
 [semantic-quality.md](semantic-quality.md). Positions, synthetic corpora and the
-offline Rust runner are implemented; semantic call resolution and the per-language
-recall/precision gate remain open. Neither those foundations nor a passing producer
-smoke establish that the quality target is met.
+offline Rust runner and opt-in validated Rust calls are implemented. The frozen
+Rust corpus passes the recall/precision gate; TypeScript producer/acceptance and
+general project dependency provisioning remain open. A producer smoke alone
+does not establish accuracy, and the corpus result is not an arbitrary-project claim.
 
 A 90%+ target needs a versioned, independently labelled corpus of internal
 statically resolvable references, per language. Measure recall against its expected
 targets and precision against all returned targets; count wrong targets as errors,
 not successes. Track external, dynamic and unsupported cases separately without
 silently removing unsupported internal cases from the recall denominator. The
-current snapshot link counts and synthetic regression cases do not establish
-that target. Receiver typing and module/build configuration require separate
+current snapshot link counts and ordinary structural regression cases do not
+establish that target; the separate acceptance gate establishes only its named
+corpus/profile result. Receiver typing and module/build configuration require separate
 semantic evidence (for example verified SCIP), not a same-name fallback. SCIP
 definition/reference evidence must remain distinct from proven call edges.
 

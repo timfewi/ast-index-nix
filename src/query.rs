@@ -47,6 +47,8 @@ pub struct Query {
     pub changes: Vec<Change>,
     pub baseline: Option<i64>,
     pub relation: Option<String>,
+    /// AST remains the default. Combined queries require fresh semantic evidence.
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,9 +83,38 @@ pub struct Window {
 }
 
 impl Query {
+    pub(crate) fn reference_table(&self) -> &'static str {
+        if self.evidence.as_deref() == Some("combined") {
+            "combined_refs"
+        } else {
+            "refs"
+        }
+    }
+
+    pub(crate) fn evidence_column(&self) -> &'static str {
+        if self.evidence.as_deref() == Some("combined") {
+            "r.evidence"
+        } else {
+            "NULL"
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !ACTIONS.contains(&self.action.as_str()) {
             return Err(Error::Invalid("unsupported action".into()));
+        }
+        if let Some(evidence) = self.evidence.as_deref() {
+            if !matches!(evidence, "ast" | "combined") {
+                return Err(Error::Invalid("evidence must be ast or combined".into()));
+            }
+            if !matches!(
+                self.action.as_str(),
+                "refs" | "describe" | "callers" | "callees" | "impact"
+            ) {
+                return Err(Error::Invalid(
+                    "evidence applies to refs/describe/callers/callees/impact".into(),
+                ));
+            }
         }
         for value in [
             &self.query,

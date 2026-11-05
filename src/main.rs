@@ -63,6 +63,9 @@ struct QueryOptions {
     match_mode: Option<String>,
     #[arg(long, global = true)]
     reason: Option<String>,
+    /// Opt in to validated semantic calls; the AST-only view remains available.
+    #[arg(long, global = true, value_parser = ["ast", "combined"])]
+    evidence: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -260,6 +263,7 @@ fn run(cli: Cli) -> ast_index::Result<()> {
                 cursor: o.cursor,
                 match_mode: o.match_mode,
                 reason: o.reason,
+                evidence: o.evidence,
                 ..Query::default()
             };
             let mut nice = false;

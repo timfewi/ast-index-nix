@@ -102,5 +102,11 @@ CLI commands and `code_explore` actions share validation and response payloads.
 See [Queries](../README.md#queries) for actions, selectors, filters and cursors.
 JSON list results contain `items`, `generation`, `truncated` and `next_cursor`;
 `describe` contains the selected symbol and both relationship pages. Imported
-semantic evidence is separate from AST relationships. `freshness` explicitly
+raw semantic evidence is separate from AST relationships. For an explicitly
+refreshed Rust project/profile, `evidence: "combined"` selects validated call
+targets in refs/describe/callers/callees/impact; default queries remain AST-only.
+The combined view fails if source/configuration, AST generation or validator/
+runner profile no longer matches. Unconfirmed calls within its input profile
+remain `semantic_unverified`, including cfg-disabled or unloaded source; they
+cannot fall back to an AST target. `freshness` explicitly
 checks current bytes; ordinary status reports a snapshot, not perpetual freshness.

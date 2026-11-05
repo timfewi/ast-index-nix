@@ -6,13 +6,13 @@ Bash/Shell, Go, Lua and PostgreSQL-oriented SQL support is implemented through
 the existing CLI/MCP query engine. Language adapters live in
 `src/parse/{bash,go,lua,sql}.rs`; Go package resolution is in `src/resolve/go.rs`.
 Shared changes cover shebang detection, bounded and hashed `go.mod` metadata,
-imports, extraction/resolution fingerprints, schema version 8 and SQL
+imports, extraction/resolution fingerprints, schema version 9 and SQL
 `dependency` references separate from call edges. Astro and embedded shell/SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-71 unit, 57 integration, 4 quality-oracle tests and one real sandboxed producer
-test, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
+76 unit, 58 integration, 5 quality tests and two real sandboxed producer
+tests, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
 order/builtin shadowing, Lua mutation, SQL namespaces/CTEs/owners, shared read
@@ -27,11 +27,17 @@ CLI and MCP JSON agree. These counts are not semantic recall or accuracy.
 
 Exact reference ranges re-extract legacy rows. The Rust corpus freezes 101
 eligible calls plus two abstention cases; TypeScript freezes 100 plus three.
-Oracle tests verify accounting and failure thresholds, not achieved semantic
-recall. Both corpora typecheck without project dependencies. Generic-call,
+Oracle self-tests verify accounting and failure thresholds; a separate real Rust
+acceptance test passes with 101 correct targets, no wrong targets and two dynamic
+abstentions. TypeScript semantic acceptance remains open. Both corpora typecheck
+without project dependencies. Generic-call,
 constructor and commented-path regressions cover extraction and lexical scope.
-Schema 8 tracks additional manifest inputs so configuration/lock changes exclude
-stale evidence. The separate Rust producer uses a private snapshot and an offline
+Manifest inputs make configuration/lock changes exclude stale evidence. Schema 9
+stores the independent static-call overlay. `--evidence combined` preserves the
+AST default and fails on obsolete generation/profile or stale input. Conflict,
+ambiguity, Unicode position conversion, malformed source and project-boundary
+regressions pass, as does CLI/MCP parity across all supported combined actions.
+The separate Rust producer uses a private snapshot and an offline
 Bubblewrap process; its build-script/proc-macro CLI paths are disabled in the
 pinned producer source. A real canary test verifies build scripts do not execute.
 

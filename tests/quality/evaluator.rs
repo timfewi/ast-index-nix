@@ -8,7 +8,7 @@ pub struct Location {
     pub range: [u32; 4],
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Case {
     pub id: String,
     pub family: String,

@@ -10,14 +10,14 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/imports.rs](../src/imports.rs), [src/resolve.rs](../src/resolve.rs), [src/resolve/go.rs](../src/resolve/go.rs): static indexed-file dependencies, Go package lookup and conservative call/SQL object relationships.
 - [src/store.rs](../src/store.rs), [src/store/query.rs](../src/store/query.rs), [src/store/history.rs](../src/store/history.rs): additive schema, writer lock, SQL projections, bounded traversal and two structural snapshots.
 - [src/query.rs](../src/query.rs), [src/engine.rs](../src/engine.rs), [src/report.rs](../src/report.rs): shared contracts, validation, cursors and text.
-- [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs): optional local SCIP import with independent provenance and source verification.
+- [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs), [src/scip/calls.rs](../src/scip/calls.rs): local SCIP import, source verification and independent static-call overlay.
 - [src/producer.rs](../src/producer.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private Rust snapshot runner, offline Bubblewrap/tool closure and patched SCIP producer; no invocation from core queries.
 - [src/main.rs](../src/main.rs), [src/rpc.rs](../src/rpc.rs), [src/serve.rs](../src/serve.rs): CLI, single-tool MCP and socket/proxy adapters.
 
 ## Interfaces and limits
 `code_explore` actions: status, freshness, search, outline, describe, callers,
 callees, impact, refs, imports, importers, deps, map, changes, diff, semantic.
-CLI also owns explicit `index` and `import-scip` mutations. Schema 8 persists
+CLI also owns explicit `index` and `import-scip` mutations. Schema 9 persists
 zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
 reindexing. Manifest inputs include configuration/lock hashes. Rust generic-call
 wrappers/path trivia and JS/TS constructor expressions retain call positions.
@@ -27,7 +27,8 @@ Languages: Rust, Python, TypeScript/TSX, JavaScript, Nix, Bash/Shell, Go, Lua an
 PostgreSQL SQL. No unrelated bare-name fallback; Go has explicit package scope.
 JS/TS named and namespace imports can interoperate; explicit Rust use bindings
 expand crate/self/super paths with aliases and grouped imports. Shadowing and
-reassignment block targets; globs and inferred receivers remain unsupported.
+reassignment block targets. AST-only globs/inferred receivers remain unsupported;
+the optional Rust semantic profile can establish unique inherent receiver targets.
 Nix/Lua calls remain local. Shell source
 paths retain unresolved working directories. Go module hashes govern freshness;
 Lua requires use project-root layouts. SQL `dependency` refs are separate from
@@ -41,12 +42,16 @@ Status reports link counts and unresolved reasons by language/reference kind;
 imports link to files, calls/dependencies to definitions, not an accuracy score.
 Freshness requires an explicit bounded byte
 scan. A successful old check does not prove present freshness. Semantic evidence
-requires verified embedded source or a producer manifest, and never becomes an
-AST call edge. Sources and all returned code content remain untrusted data.
+requires verified embedded source or a producer manifest. `evidence=combined`
+uses exact token identities and validated static declarations in refs/describe/
+callers/callees/impact; AST remains default and unchanged. Conflicts, trait dispatch,
+attribute macros and ambiguity abstain. Source/config, AST generation and
+validator/runner fingerprint changes require refresh. Sources and returned code
+remain untrusted data.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): private semantic adapter/overlay plan; explicit Rust runner implemented, semantic calls and producer recall unverified.
-- [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent synthetic labels; scorer self-tests are not a passed 90% semantic gate.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust acceptance and remaining TypeScript/dependency/host integration work.
+- [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[acceptance](../tests/quality/acceptance.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent labels; actual Rust combined gate passes 101/101 with no wrong targets and two abstentions. TypeScript semantic accuracy remains unverified.
 - [Producer smoke](../tests/producer.rs): real offline SCIP import, build-script canary, temporary artifact cleanup and lockfile invalidation; missing dependencies/config support remain explicit gaps.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.

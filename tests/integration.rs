@@ -77,6 +77,123 @@ fn binary() -> PathBuf {
 }
 
 #[test]
+fn semantic_call_overlay_has_cli_mcp_parity_and_keeps_ast_queries_available() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("Cargo.toml"),"[package]\nname=\"synthetic-transport\"\nversion=\"0.0.0\"\nedition=\"2021\"\n[workspace]\n").unwrap();
+    std::fs::write(
+        root.join("Cargo.lock"),
+        "version=4\n[[package]]\nname=\"synthetic-transport\"\nversion=\"0.0.0\"\n",
+    )
+    .unwrap();
+    let source = "#![no_std]\npub struct Counter;\nimpl Counter { pub fn get(&self) {} }\npub fn caller(c: &Counter) { c.get(); c.get(); }\n";
+    std::fs::write(root.join("src/lib.rs"), source).unwrap();
+    ast_index::producer::rust(root, &root.join(".ast-index")).unwrap();
+    for (action, name) in [
+        ("callees", "caller"),
+        ("callers", "Counter::get"),
+        ("impact", "Counter::get"),
+        ("describe", "caller"),
+    ] {
+        let cli = raw_json(root, &[action, name, "--evidence", "combined", "--json"]);
+        let mcp = mcp_json(
+            root,
+            serde_json::json!({"action":action,"query":name,"evidence":"combined","format":"json"}),
+        );
+        assert_eq!(cli, mcp, "{action}");
+        assert_eq!(cli["evidence"]["mode"], "combined");
+        assert_eq!(cli["evidence"]["version"], "2026-09-21");
+    }
+    let cli = raw_json(
+        root,
+        &[
+            "refs",
+            "--kind",
+            "call",
+            "--evidence",
+            "combined",
+            "--limit",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        cli,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"refs","kind":"call","evidence":"combined","limit":1,"format":"json"})
+        )
+    );
+    assert_eq!(cli["items"][0]["reason"], "semantic_static");
+    let cursor = cli["next_cursor"].as_str().unwrap();
+    let next = raw_json(
+        root,
+        &[
+            "refs",
+            "--kind",
+            "call",
+            "--evidence",
+            "combined",
+            "--limit",
+            "1",
+            "--cursor",
+            cursor,
+            "--json",
+        ],
+    );
+    assert_ne!(cli["items"][0]["range"], next["items"][0]["range"]);
+    assert!(
+        !run_cli(
+            root,
+            &[
+                "refs",
+                "--kind",
+                "call",
+                "--evidence",
+                "ast",
+                "--limit",
+                "1",
+                "--cursor",
+                cursor,
+                "--json"
+            ]
+        )
+        .status
+        .success(),
+        "a cursor must bind the evidence view"
+    );
+    assert!(
+        raw_json(root, &["callees", "caller", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let text = run_cli(root, &["describe", "caller", "--evidence", "combined"]);
+    assert!(
+        String::from_utf8(text.stdout)
+            .unwrap()
+            .contains("rust-analyzer")
+    );
+    std::fs::write(root.join("Cargo.lock"), "changed").unwrap();
+    let stale = run_cli(
+        root,
+        &["callees", "caller", "--evidence", "combined", "--json"],
+    );
+    assert!(!stale.status.success());
+    assert!(
+        String::from_utf8(stale.stdout)
+            .unwrap()
+            .contains("stale semantic")
+    );
+    assert!(
+        run_cli(root, &["callees", "caller", "--evidence", "ast", "--json"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn constructors_keep_exact_ranges_and_shadowed_targets_unresolved() {
     let directory = tempfile::tempdir().unwrap();
     for file in ["main.js", "main.ts"] {
@@ -182,7 +299,9 @@ fn legacy_reference_ranges_remain_unknown_until_reextraction() {
     let connection = rusqlite::Connection::open(root.join(".ast-index/index.sqlite")).unwrap();
     connection
         .execute_batch(
-            "ALTER TABLE refs DROP COLUMN source_range;
+            "DROP VIEW combined_refs;
+        DROP INDEX idx_refs_range;
+        ALTER TABLE refs DROP COLUMN source_range;
         UPDATE meta SET value='6' WHERE key='schema_version';",
         )
         .unwrap();

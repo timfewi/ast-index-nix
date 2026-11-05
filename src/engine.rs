@@ -75,7 +75,10 @@ impl Engine {
             if query.action == "status" { return Ok(serde_json::to_value(self.status()?)?); }
             self.require_index()?;
             let window = query.window(self.store.generation()?)?;
-            let value = match query.action.as_str() {
+            let evidence = if query.evidence.as_deref() == Some("combined") {
+                Some(crate::scip::calls::require_current(&self.root, &self.store)?)
+            } else { None };
+            let mut value = match query.action.as_str() {
                 "search" | "outline" => {
                     if query.action == "outline" && query.file.is_none() { return Err(Error::Invalid("outline requires file".into())); }
                     if query.action == "search" { query.name()?; }
@@ -103,6 +106,7 @@ impl Engine {
                 }
                 _ => return Err(Error::Invalid(format!("unknown action `{}`", query.action))),
             };
+            if let Some(evidence) = evidence { value["evidence"] = evidence; }
             if serde_json::to_vec(&value)?.len() > 60 * 1024 { return Err(Error::Invalid("result exceeds output budget; reduce limit".into())); }
             Ok(value)
         })

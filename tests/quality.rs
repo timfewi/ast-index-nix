@@ -1,5 +1,7 @@
 //! Synthetic resolution quality oracle. Producer integration is added alongside
 //! the semantic adapters; these tests verify that its scorer cannot hide gaps.
+#[path = "quality/acceptance.rs"]
+mod acceptance;
 #[path = "quality/evaluator.rs"]
 mod evaluator;
 

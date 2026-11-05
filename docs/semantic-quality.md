@@ -1,9 +1,10 @@
 # Private semantic evidence and the 90% target
 
-Exact positions, independent Rust/TypeScript corpora and an explicit offline
-Rust producer are implemented. Semantic call overlays, the TypeScript producer
-and the recall/precision acceptance gate remain planned.
-This is not a claim that the target has been achieved.
+Exact positions, independent Rust/TypeScript corpora, an explicit offline Rust
+producer and a validated Rust call overlay are implemented. The Rust profile
+passes the frozen synthetic corpus; TypeScript producer/dispatch acceptance,
+dependency provisioning and host refresh integration remain open. This does not
+establish the target on arbitrary projects, other languages or the full plan.
 Keep the existing offline AST engine; add locally produced semantic evidence
 through an explicit adapter. Do not train a model, upload source, or copy a
 user's repositories into a public test corpus to improve resolution.
@@ -38,9 +39,11 @@ does not establish the same recall on arbitrary projects or languages.
 - [The importer](../src/scip.rs) accepts local SCIP definitions, references and
   implementations with producer provenance, bounded decoding, relative-path
   validation and source-snapshot checks. Producer arguments and hover text are
-  not persisted. Semantic evidence currently stays separate from AST edges.
+  not persisted. Raw semantic evidence stays separate from AST edges. The opt-in
+  `combined` view uses the additional validator below and never overwrites AST.
 - [Reference storage](../src/store.rs) persists zero-based half-open UTF-8
-  syntax ranges since schema 7. Schema 8 also retains manifest input hashes.
+  syntax ranges since schema 7. Schema 8 added manifest input hashes; schema 9
+  stores separately validated call evidence and the combined graph view.
   All extractors supply ranges; legacy rows retain
   null until re-extraction. CLI/MCP tests cover Unicode, CRLF, nested and
   same-line calls across eight languages. Rust generic-call extraction is
@@ -49,8 +52,8 @@ does not establish the same recall on arbitrary projects or languages.
   across ten families, including a fixed control-flow family, and two explicit
   abstention cases. Expected identities are hand-authored source labels in
   synthetic code. The evaluator tests failed producer, recall, precision and
-  safety outcomes independently. This validates the oracle, not a producer's
-  recall. Producer answers must never replace expected labels to make it pass.
+  safety outcomes independently. The real Rust producer and combined API pass
+  its acceptance gate. Producer answers never replace expected labels.
 - The TypeScript oracle freezes 100 eligible calls across ten families and
   three abstention cases, including typed-but-overridable receivers. It
   typechecks with the pinned TypeScript compiler. JS/TS constructor expressions
@@ -63,7 +66,19 @@ does not establish the same recall on arbitrary projects or languages.
   An executable synthetic build-script canary, real SCIP import, temporary-output
   cleanup and lockfile invalidation pass. Custom Cargo configuration and missing
   offline dependencies fail explicitly. Dependency-cache provisioning and further
-  producer profiles remain unimplemented. This is not an accuracy result.
+  producer profiles remain unimplemented. The producer smoke alone is not an
+  accuracy result; the independent end-to-end acceptance below supplies that.
+- [The call overlay](../src/scip/calls.rs) joins an exact AST call range to a
+  semantic occurrence and a unique declaration name token in the same project.
+  Rust free functions, inherent methods and tuple constructors are admitted;
+  trait dispatch, attribute macros, malformed source, ambiguous definitions and
+  conflicting AST/semantic results abstain. Unconfirmed calls in participating
+  inputs remain unverified, so cfg-disabled/unloaded targets cannot return via
+  AST fallback. UTF-16/32 positions are normalized
+  to UTF-8. `refs`, `describe`, `callers`, `callees` and `impact` opt in with
+  `evidence=combined`; CLI/MCP results agree. Source/config changes, AST reindexing
+  and validator/runner profile changes invalidate the overlay. AST remains the
+  default and is independently queryable.
 - Import replaces the previous semantic artifact. Queries check all imported
   documents and supplied configuration/lock inputs, with a combined 2,000-file
   bound; artifacts are capped at 4 MiB. This
@@ -74,6 +89,40 @@ does not establish the same recall on arbitrary projects or languages.
   required an artifact/source BLAKE3 manifest because this producer omitted
   embedded source text. Changing the source made semantic queries exclude the
   stale artifact. This proves that narrow data path, not a recall percentage.
+
+## Executed Rust acceptance
+
+Corpus version: the Rust source labels frozen in commit `4a74f8d` (unchanged).
+Producer: pinned rust-analyzer 2026-09-21 with build scripts/proc macros disabled.
+Command: `nix develop --command cargo test --offline --test quality rust_combined -- --nocapture`.
+[The acceptance test](../tests/quality/acceptance.rs) queries real AST and combined
+results and translates actual definition positions without consulting gold labels.
+The normal fast gate also runs this test; missing producer support fails it.
+
+| Family | Eligible | AST correct | Combined correct | Combined wrong/missed |
+| --- | ---: | ---: | ---: | ---: |
+| Local/imported functions | 10 | 0 | 10 | 0/0 |
+| Qualified paths/aliases | 10 | 9 | 10 | 0/0 |
+| Re-exports | 10 | 1 | 10 | 0/0 |
+| Generics | 10 | 0 | 10 | 0/0 |
+| Concrete receivers | 10 | 0 | 10 | 0/0 |
+| Constructed values | 11 | 0 | 11 | 0/0 |
+| Associated functions | 10 | 3 | 10 | 0/0 |
+| Nested/same-line calls | 10 | 0 | 10 | 0/0 |
+| Lexical scopes | 10 | 8 | 10 | 0/0 |
+| Fixed control-flow family | 10 | 0 | 10 | 0/0 |
+| Total | 101 | 21 | 101 | 0/0 |
+
+This corpus yields 100% recall and 100% precision for the combined profile;
+both explicit dynamic-call cases abstain. Additional safety tests cover exact
+Unicode/CRLF ranges, conflicts, duplicate targets, malformed syntax, attribute
+macros, project boundaries, unknown producers and stale source/configuration.
+A real producer regression also exercises reassigned function pointers, generic/
+dynamic trait receivers, unknown attributes on declarations/enclosing modules/
+callers, and cfg-disabled/unloaded targets.
+The independent all-reference baseline remains 21 linked AST calls out of 103
+and zero linked imports out of eight (21/111 overall, about 18.9%); status keeps
+that metric separate. TypeScript has no executed semantic acceptance result yet.
 
 ## Implementation order and exit criteria
 

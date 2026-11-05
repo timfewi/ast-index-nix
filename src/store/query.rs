@@ -7,6 +7,22 @@ use crate::{
 };
 use rusqlite::{params_from_iter, types::Value};
 
+fn optional_json(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+) -> rusqlite::Result<Option<serde_json::Value>> {
+    row.get::<_, Option<String>>(column)?
+        .map(|s| serde_json::from_str(&s))
+        .transpose()
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                column,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })
+}
+
 struct Filter {
     sql: Vec<String>,
     values: Vec<Value>,
@@ -153,14 +169,14 @@ impl Store {
             "r.resolved_symbol_id"
         };
         let sql = format!(
-            "SELECT caller.qualified, callee.qualified, site.path, r.line, r.confidence, r.reason
-            FROM refs r JOIN files site ON site.id = r.file_id
+            "SELECT caller.qualified, callee.qualified, site.path, r.line, r.confidence, r.reason,{}
+            FROM {} r JOIN files site ON site.id = r.file_id
             LEFT JOIN symbols caller ON caller.id = r.from_symbol_id
             JOIN symbols callee ON callee.id = r.resolved_symbol_id
             LEFT JOIN symbols s ON s.id = {neighbor}
             LEFT JOIN files f ON f.id = COALESCE(s.file_id, r.file_id)
             WHERE {} ORDER BY site.path, r.line, r.id {bounds}",
-            filter.clause()
+            query.evidence_column(), query.reference_table(), filter.clause()
         );
         let mut statement = self.conn.prepare(&sql)?;
         Ok(statement
@@ -172,6 +188,7 @@ impl Store {
                     line: r.get::<_, u32>(3)?,
                     confidence: super::parse_confidence(r.get(4)?),
                     reason: r.get(5)?,
+                    evidence: optional_json(r, 6)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
@@ -191,9 +208,9 @@ impl Store {
         }
         let bounds = filter.bounds(window);
         let sql = format!("SELECT r.id, f.path, r.name, r.kind, r.line, s.qualified,
-            r.resolved_symbol_id, r.confidence, r.path, r.reason, r.source_range
-            FROM refs r JOIN files f ON f.id = r.file_id LEFT JOIN symbols s ON s.id = r.from_symbol_id
-            WHERE {} ORDER BY f.path, r.line, r.id {bounds}", filter.clause());
+            r.resolved_symbol_id, r.confidence, r.path, r.reason, r.source_range,{}
+            FROM {} r JOIN files f ON f.id = r.file_id LEFT JOIN symbols s ON s.id = r.from_symbol_id
+            WHERE {} ORDER BY f.path, r.line, r.id {bounds}", query.evidence_column(),query.reference_table(),filter.clause());
         let mut statement = self.conn.prepare(&sql)?;
         Ok(statement
             .query_map(params_from_iter(filter.values), |r| {
@@ -220,6 +237,7 @@ impl Store {
                     confidence: super::parse_confidence(r.get(7)?),
                     path: r.get(8)?,
                     reason: r.get(9)?,
+                    evidence: optional_json(r, 11)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
@@ -231,7 +249,7 @@ impl Store {
         window: &Window,
         id: i64,
     ) -> Result<Vec<super::ImpactRow>> {
-        let ids = self.impact_ids(id, query.depth.unwrap_or(3))?;
+        let ids = self.impact_ids(id, query.depth.unwrap_or(3), query)?;
         let mut filter = Filter::new(query, "s.kind", false)?;
         let reachable = filter.bind(serde_json::to_string(&ids)?);
         let bounds = filter.bounds(window);

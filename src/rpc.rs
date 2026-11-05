@@ -193,7 +193,8 @@ pub fn tool_definition() -> Value {
         "description": "Structural code intelligence for the indexed repository. \
     Use `search` to find symbols, `outline` for one file, `describe` for a symbol with its callers and callees, \
     `callers`/`callees` for one direction, `impact` for transitive callers, and `status` for index coverage. \
-    Edges are name-resolved; ambiguous or dynamic calls are reported as unresolved. \
+    Edges default to AST name resolution; `evidence: combined` opts into fresh validated semantic calls. \
+    Ambiguous, conflicting or dynamic targets remain unresolved. \
     Prefer this over grep/read loops, then read the file before editing.",
         "inputSchema": {
             "type": "object",
@@ -231,6 +232,7 @@ pub fn tool_definition() -> Value {
                 "cursor": { "type": "string", "description": "Opaque continuation returned by this query; invalid after reindexing." },
                 "match_mode": { "enum": ["exact", "prefix", "contains"], "description": "Literal name matching; no user wildcards." },
                 "reason": { "type": "string", "description": "Filter references by resolution reason." },
+                "evidence": {"enum":["ast","combined"],"description":"AST is the default; combined refs/describe/callers/callees/impact require a fresh validated semantic call overlay."},
                 "budget": { "type": "integer", "minimum": 1024, "maximum": 32768, "description": "Repository map byte budget." },
                 "baseline": { "type": "integer", "minimum": 1, "description": "Retained structural snapshot generation." },
                 "changes": { "type": "array", "maxItems": 100, "items": { "type": "object", "properties": {

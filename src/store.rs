@@ -15,7 +15,7 @@ mod history;
 mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +68,8 @@ pub struct CallEdge {
     pub line: u32,
     pub confidence: Confidence,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<serde_json::Value>,
 }
 
 /// A symbol reachable from `impact`.
@@ -302,6 +304,20 @@ impl Store {
             CREATE TABLE IF NOT EXISTS semantic_implementations(id INTEGER PRIMARY KEY, file TEXT NOT NULL REFERENCES semantic_documents(file) ON DELETE CASCADE,
                 identity TEXT NOT NULL, symbol TEXT NOT NULL, target_identity TEXT NOT NULL, target_symbol TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_semantic_implementations ON semantic_implementations(target_symbol);")?;
+        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS semantic_calls(
+            ref_id INTEGER PRIMARY KEY REFERENCES refs(id) ON DELETE CASCADE,
+            target_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL,confidence TEXT NOT NULL,evidence TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_semantic_calls_target ON semantic_calls(target_id);
+            CREATE INDEX IF NOT EXISTS idx_refs_range ON refs(file_id,kind,source_range);
+            CREATE VIEW IF NOT EXISTS combined_refs AS
+            SELECT r.id,r.file_id,r.name,r.name_lower,r.path,r.kind,r.line,r.from_symbol_id,r.blocked,r.import_target,r.source_range,
+                r.resolved_symbol_id,r.reason,r.confidence,NULL AS evidence
+            FROM refs r WHERE NOT EXISTS(SELECT 1 FROM semantic_calls c WHERE c.ref_id=r.id)
+            UNION ALL
+            SELECT r.id,r.file_id,r.name,r.name_lower,r.path,r.kind,r.line,r.from_symbol_id,r.blocked,r.import_target,r.source_range,
+                c.target_id,c.reason,c.confidence,c.evidence
+            FROM semantic_calls c JOIN refs r ON r.id=c.ref_id;")?;
         for column in ["start_column", "end_column"] {
             let mut statement = self.conn.prepare("PRAGMA table_info(snapshot_symbols)")?;
             let names: Vec<String> = statement
@@ -559,17 +575,23 @@ impl Store {
     }
 
     /// Transitive callers of a symbol up to `depth` hops.
-    pub(crate) fn impact_ids(&self, symbol_id: i64, depth: u32) -> Result<Vec<(i64, u32)>> {
+    pub(crate) fn impact_ids(
+        &self,
+        symbol_id: i64,
+        depth: u32,
+        query: &crate::query::Query,
+    ) -> Result<Vec<(i64, u32)>> {
         use std::collections::{HashSet, VecDeque};
         let mut seen = HashSet::from([symbol_id]);
         let mut queue = VecDeque::from([(symbol_id, 0)]);
         let mut result = Vec::new();
         let mut remaining = 20_000usize;
-        let mut statement = self.conn.prepare(
-            "SELECT DISTINCT from_symbol_id FROM refs
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT DISTINCT from_symbol_id FROM {}
             WHERE resolved_symbol_id = ?1 AND kind = 'call' AND from_symbol_id IS NOT NULL
             ORDER BY from_symbol_id LIMIT ?2",
-        )?;
+            query.reference_table()
+        ))?;
         while let Some((id, distance)) = queue.pop_front() {
             if distance >= depth.min(10) {
                 continue;

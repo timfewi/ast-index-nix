@@ -134,7 +134,7 @@ relationship differences and deleted-symbol impact. Unique file/kind/qualified
 names are comparison identities; duplicate identities are reported rather than
 matched arbitrarily. Snapshots are local derived state, not Git history.
 
-## D13 — Opt-in SCIP evidence, never inferred calls
+## D13 — Raw SCIP evidence and opt-in validated calls
 
 The [SCIP schema](https://github.com/scip-code/scip/blob/main/scip.proto) was
 inspected on 2026-10-13, including its typed ranges and explicit implementation
@@ -160,8 +160,23 @@ loading, so the package applies two fail-if-missing source replacements disablin
 those paths. Editor settings alone are insufficient. The original upstream checks
 remain enabled. Custom Cargo configuration and unavailable offline dependencies
 fail closed; no installer or network fallback runs. Snapshot manifests include
-configuration/locks, and raw artifacts are removed after import. Semantic call
-promotion still requires the additional validation described in the quality plan.
+configuration/locks, and raw artifacts are removed after import.
+
+The explicit `evidence=combined` view adds validated call targets while retaining
+the AST default. A supported producer/version, exact AST call-token match,
+normalized position encoding and unique same-project static declaration are all
+required. Rust inherent methods are statically dispatched; trait/default methods,
+attribute macros, invalid syntax and multiple definitions are not promoted.
+Disagreement with an existing AST target is a conflict, never an overwrite.
+Calls in participating source inputs without exact semantic confirmation remain
+unverified. A real cfg-disabled declaration exposed an unsafe AST fallback; the
+combined view now excludes such edges while preserving the separate AST view.
+Possible targets remain inspectable on unresolved refs, capped at eight with a
+separate total count. Raw producer identity is metadata, not authentication.
+Generation/profile fingerprints plus current source/config hashes govern the
+overlay. Reindexing requires refresh rather than reusing obsolete reference IDs.
+The independent frozen Rust corpus and negative/transport tests exercise this
+contract; no arbitrary-project or other-language 90% guarantee follows from it.
 
 ## D14 — Language-specific static evidence through one interface
 

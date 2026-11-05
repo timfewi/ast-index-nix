@@ -291,7 +291,11 @@ pub fn query_text(value: &serde_json::Value) -> String {
     }
     if value.get("symbol").is_some() && value.get("callers").is_some() {
         return format!(
-            "{}\ncallers:\n{}\ncallees:\n{}",
+            "{}{}\ncallers:\n{}\ncallees:\n{}",
+            value
+                .get("evidence")
+                .map(|e| format!("evidence: {e}\n"))
+                .unwrap_or_default(),
             item_text(&value["symbol"]),
             query_text(&value["callers"]),
             query_text(&value["callees"])

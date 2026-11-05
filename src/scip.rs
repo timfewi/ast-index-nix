@@ -1,5 +1,5 @@
 //! Opt-in ingestion of precomputed semantic evidence. Source paths and hashes
-//! are validated; this module never runs indexers or treats references as calls.
+//! are validated; only the separate static-call validator can admit call evidence.
 use crate::{
     error::{Error, Result},
     query::{Query, Window},
@@ -14,6 +14,7 @@ use std::{
     io::Read,
     path::Path,
 };
+pub(crate) mod calls;
 mod wire;
 
 const ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
@@ -295,6 +296,14 @@ pub fn import(
             return Err(invalid("combined semantic document/input budget exceeded"));
         }
     }
+    let calls = calls::build(
+        root,
+        store,
+        &checked,
+        &tool,
+        &digest,
+        manifest.as_ref().map(|m| &m.files),
+    )?;
     store.transaction(|| {
         store.conn.execute_batch("DELETE FROM semantic_implementations; DELETE FROM semantic_occurrences; DELETE FROM semantic_documents; DELETE FROM semantic_inputs;")?;
         if let Some(manifest) = &manifest {
@@ -325,12 +334,13 @@ pub fn import(
             }
         }
         store.bump_generation()?;
+        calls::persist(store, &calls, tool.name == "rust-analyzer" && tool.version == "2026-09-21")?;
         stats.generation=store.generation()?;
         Ok(stats)
     })
 }
 
-pub(crate) fn query(root: &Path, store: &Store, query: &Query, window: &Window) -> Result<Value> {
+pub(crate) fn stale_files(root: &Path, store: &Store) -> Result<Vec<String>> {
     let documents: Vec<(String, String)> = store
         .conn
         .prepare("SELECT file,hash FROM semantic_documents UNION SELECT file,hash FROM semantic_inputs ORDER BY file LIMIT 2001")?
@@ -356,6 +366,11 @@ pub(crate) fn query(root: &Path, store: &Store, query: &Query, window: &Window) 
             stale.push(file);
         }
     }
+    Ok(stale)
+}
+
+pub(crate) fn query(root: &Path, store: &Store, query: &Query, window: &Window) -> Result<Value> {
+    let stale = stale_files(root, store)?;
     if !stale.is_empty() {
         return Ok(
             json!({"items":[],"generation":window.generation,"excluded":"stale_semantic_artifact","truncated":false,"next_cursor":null,"stale_count":stale.len(),"stale_files":stale.into_iter().take(16).collect::<Vec<_>>() }),

@@ -189,6 +189,8 @@ pub struct Reference {
     /// Full scoped path when the language provides one.
     pub path: Option<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<serde_json::Value>,
 }
 
 /// An outgoing edge from a symbol to a resolved callee.
