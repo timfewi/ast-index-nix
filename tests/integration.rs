@@ -194,6 +194,92 @@ fn semantic_call_overlay_has_cli_mcp_parity_and_keeps_ast_queries_available() {
 }
 
 #[test]
+fn typescript_call_overlay_has_cli_mcp_parity_and_rejects_stale_inputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let config = r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"},"include":["*.ts"]}"#;
+    let source = "export function target() {return 1;}\nexport function caller() {return target() + target();}\n";
+    std::fs::write(root.join("tsconfig.json"), config).unwrap();
+    std::fs::write(root.join("main.ts"), source).unwrap();
+    ast_index::producer::typescript(root, &root.join(".ast-index")).unwrap();
+    for (action, name) in [
+        ("callees", "caller"),
+        ("callers", "target"),
+        ("impact", "target"),
+        ("describe", "caller"),
+    ] {
+        let cli = raw_json(root, &[action, name, "--evidence", "combined", "--json"]);
+        assert_eq!(
+            cli,
+            mcp_json(
+                root,
+                serde_json::json!({"action":action,"query":name,"evidence":"combined","format":"json"})
+            ),
+            "{action}"
+        );
+        assert_eq!(cli["evidence"]["indexer"], "typescript-lsp");
+        assert_eq!(cli["evidence"]["version"], "7.0.2+ast-index.1");
+    }
+    let refs = raw_json(
+        root,
+        &[
+            "refs",
+            "main.ts",
+            "--kind",
+            "call",
+            "--evidence",
+            "combined",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        refs,
+        mcp_json(
+            root,
+            serde_json::json!({"action":"refs","file":"main.ts","kind":"call","evidence":"combined","format":"json"})
+        )
+    );
+    assert_eq!(refs["items"].as_array().unwrap().len(), 2);
+    assert!(
+        refs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["reason"] == "semantic_static")
+    );
+    for (file, changed) in [
+        ("main.ts", format!("{source}// changed source\n")),
+        ("tsconfig.json", format!("{config}\n")),
+    ] {
+        std::fs::write(root.join(file), changed).unwrap();
+        let stale = run_cli(
+            root,
+            &["callees", "caller", "--evidence", "combined", "--json"],
+        );
+        assert!(!stale.status.success());
+        assert!(
+            String::from_utf8(stale.stdout)
+                .unwrap()
+                .contains("stale semantic")
+        );
+        assert!(
+            run_cli(root, &["callees", "caller", "--evidence", "ast", "--json"])
+                .status
+                .success()
+        );
+        ast_index::producer::typescript(root, &root.join(".ast-index")).unwrap();
+        assert!(
+            run_cli(
+                root,
+                &["callees", "caller", "--evidence", "combined", "--json"]
+            )
+            .status
+            .success()
+        );
+    }
+}
+
+#[test]
 fn constructors_keep_exact_ranges_and_shadowed_targets_unresolved() {
     let directory = tempfile::tempdir().unwrap();
     for file in ["main.js", "main.ts"] {

@@ -170,8 +170,10 @@ type acquisition and telemetry are disabled; only the compiler closure is mounte
 and the executable search path points to a nonexistent directory. After acknowledged shutdown, the adapter
 closes stdin: this version's `exit` notification returns cancellation/status 1,
 whereas its EOF path exits successfully. Nonzero process exits still fail.
-Bounded definition results are encoded as local SCIP evidence with relative
-locations and snapshot hashes. They do not enable TypeScript combined call edges.
+Bounded definition and binding-use results are encoded as local SCIP evidence
+with relative locations and snapshot hashes. Exact definition requests take
+precedence over overlapping reference groups. The adapter revision in the
+producer version prevents older definition-only artifacts from enabling calls.
 
 The explicit `evidence=combined` view adds validated call targets while retaining
 the AST default. A supported producer/version, exact AST call-token match,
@@ -186,7 +188,12 @@ Possible targets remain inspectable on unresolved refs, capped at eight with a
 separate total count. Raw producer identity is metadata, not authentication.
 Generation/profile fingerprints plus current source/config hashes govern the
 overlay. Reindexing requires refresh rather than reusing obsolete reference IDs.
-The independent frozen Rust corpus and negative/transport tests exercise this
+TypeScript additionally validates stable functions, actual namespace/class
+bindings and fresh, nonescaping instances of simple classes. Structural types
+are insufficient: a parameter typed like a module may supply replacement values.
+Class effects include field decorators and default parameter expressions, not
+only method bodies. Unsupported mutation, inheritance and dynamic effects abstain.
+The independent frozen Rust/TypeScript corpora and negative/transport tests exercise this
 contract; no arbitrary-project or other-language 90% guarantee follows from it.
 
 ## D14 — Language-specific static evidence through one interface

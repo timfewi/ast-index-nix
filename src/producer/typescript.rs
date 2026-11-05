@@ -13,6 +13,27 @@ use std::{
 };
 
 const VERSION: &str = "7.0.2";
+// The adapter revision distinguishes complete binding/reference evidence from
+// the earlier definition-only artifacts, which cannot prove static dispatch.
+const PROFILE_VERSION: &str = "7.0.2+ast-index.1";
+
+fn node_range(node: tree_sitter::Node<'_>) -> [u32; 4] {
+    let start = node.start_position();
+    let end = node.end_position();
+    [
+        start.row as u32,
+        start.column as u32,
+        end.row as u32,
+        end.column as u32,
+    ]
+}
+
+fn identity(file: &str, range: [u32; 4]) -> Result<String> {
+    Ok(format!(
+        "typescript-lsp {}",
+        blake3::hash(serde_json::to_string(&(file, range))?.as_bytes()).to_hex()
+    ))
+}
 
 struct Client {
     child: Child,
@@ -248,7 +269,7 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
     client.notify("initialized", json!({}))?;
     let mut documents = BTreeMap::new();
     let mut line_offsets = BTreeMap::new();
-    let mut sites = Vec::new();
+    let mut sites = BTreeSet::new();
     for (file, bytes) in &snapshot.files {
         if !included.contains(file.as_str()) {
             continue;
@@ -270,10 +291,57 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
         line_offsets.insert(file.clone(), offsets);
         let parsed = crate::parse::parse(text, spec)?;
         ensure!(!parsed.has_errors, "malformed TypeScript source");
-        client.notify("textDocument/didOpen",json!({"textDocument":{"uri":uri(file),"languageId":"typescript","version":1,"text":text}}))?;
+        let language = if spec.id == "tsx" {
+            "typescriptreact"
+        } else {
+            "typescript"
+        };
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument":{"uri":uri(file),"languageId":language,"version":1,"text":text}}),
+        )?;
         for reference in parsed.refs.into_iter().filter(|r| r.kind == RefKind::Call) {
             ensure!(sites.len() < 10_000, "TypeScript call-site budget exceeded");
-            sites.push((file.clone(), reference.range));
+            sites.insert((file.clone(), reference.range));
+        }
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&spec.language())?;
+        let tree = parser
+            .parse(text, None)
+            .context("TypeScript evidence parse failed")?;
+        let mut pending = vec![tree.root_node()];
+        while let Some(node) = pending.pop() {
+            let mut extra = if node.kind() == "class_declaration" {
+                node.child_by_field_name("name")
+            } else if matches!(node.kind(), "call_expression" | "new_expression") {
+                node.child_by_field_name("function")
+                    .or_else(|| node.child_by_field_name("constructor"))
+                    .filter(|n| n.kind() == "member_expression")
+                    .and_then(|n| n.child_by_field_name("object"))
+            } else {
+                None
+            };
+            while let Some(receiver) = extra {
+                // Each namespace segment needs its own binding proof. A local
+                // parameter typed `typeof import(...)` is not a module binding.
+                let token = match receiver.kind() {
+                    "identifier" | "type_identifier" => Some(receiver),
+                    "member_expression" => receiver.child_by_field_name("property"),
+                    _ => None,
+                };
+                if let Some(token) = token {
+                    sites.insert((file.clone(), node_range(token)));
+                }
+                ensure!(
+                    sites.len() <= 10_000,
+                    "TypeScript evidence-site budget exceeded"
+                );
+                extra = (receiver.kind() == "member_expression")
+                    .then(|| receiver.child_by_field_name("object"))
+                    .flatten();
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
         }
         documents.insert(
             file.clone(),
@@ -287,6 +355,7 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
     }
     let mut definitions = BTreeSet::new();
     let mut names = BTreeMap::new();
+    let queried_sites = sites.clone();
     for (file, range) in sites {
         let result = client.request("textDocument/definition",json!({"textDocument":{"uri":uri(&file)},"position":{"line":range[0],"character":range[1]}}))?;
         let targets = match result {
@@ -317,11 +386,7 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
                     "range"
                 }],
             )?;
-            let identity = format!(
-                "typescript-lsp {}",
-                blake3::hash(serde_json::to_string(&(&target_file, target_range))?.as_bytes())
-                    .to_hex()
-            );
+            let identity = identity(&target_file, target_range)?;
             if definitions.insert((target_file.clone(), target_range)) {
                 // Names make the existing semantic name selector useful. They
                 // are bounded source tokens, not snippets or producer hover text.
@@ -355,14 +420,56 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
                     .occurrences
                     .push(occurrence(target_range, &identity, true));
             }
-            documents
-                .get_mut(&file)
-                .unwrap()
-                .occurrences
-                .push(occurrence(range, &identity, false));
+            if file != target_file || range != target_range {
+                documents
+                    .get_mut(&file)
+                    .unwrap()
+                    .occurrences
+                    .push(occurrence(range, &identity, false));
+            }
+        }
+    }
+    // Binding uses are needed to reject mutation and escape. Never silently
+    // keep a partial reference result or follow it outside verified inputs.
+    for (file, range) in &definitions {
+        let identity = identity(file, *range)?;
+        let result = client.request("textDocument/references",json!({"textDocument":{"uri":uri(file)},"position":{"line":range[0],"character":range[1]},"context":{"includeDeclaration":false}}))?;
+        let references = match result {
+            Value::Null => Vec::new(),
+            Value::Array(items) => items,
+            _ => bail!("invalid TypeScript references response"),
+        };
+        ensure!(
+            references.len() <= 10_000,
+            "TypeScript binding-reference budget exceeded"
+        );
+        for reference in references {
+            let target = reference["uri"]
+                .as_str()
+                .and_then(relative)
+                .context("TypeScript reference leaves the selected project")?;
+            let document = documents
+                .get_mut(&target)
+                .context("TypeScript reference leaves the compiler-selected inputs")?;
+            let location = coordinates(&reference["range"])?;
+            // Reference groups can include aliases/shadowed spellings. An
+            // exact definition request at this token is the authoritative
+            // binding observation, including an explicit unanswered request.
+            if queried_sites.contains(&(target.clone(), location)) {
+                continue;
+            }
+            if target != *file || location != *range {
+                document
+                    .occurrences
+                    .push(occurrence(location, &identity, false));
+            }
         }
     }
     for document in documents.values_mut() {
+        let mut seen = BTreeSet::new();
+        document
+            .occurrences
+            .retain(|o| seen.insert((o.range.clone(), o.symbol.clone(), o.symbol_roles)));
         for identity in document
             .occurrences
             .iter()
@@ -395,7 +502,7 @@ pub fn typescript(root: &Path, state: &Path) -> Result<crate::scip::ImportStats>
             project_root: "file:///project".into(),
             tool_info: Some(wire::ToolInfo {
                 name: "typescript-lsp".into(),
-                version: VERSION.into(),
+                version: PROFILE_VERSION.into(),
             }),
         }),
         documents: documents.into_values().collect(),

@@ -1,8 +1,8 @@
 # Private semantic evidence and the 90% target
 
 Exact positions, independent Rust/TypeScript corpora, explicit offline Rust and
-TypeScript producers and a validated Rust call overlay are implemented. The Rust profile
-passes the frozen synthetic corpus; TypeScript dispatch acceptance,
+TypeScript producers and validated call overlays are implemented. Both profiles
+pass their frozen synthetic corpora;
 dependency provisioning and host refresh integration remain open. This does not
 establish the target on arbitrary projects, other languages or the full plan.
 Keep the existing offline AST engine; add locally produced semantic evidence
@@ -73,13 +73,15 @@ does not establish the same recall on arbitrary projects or languages.
   It negotiates UTF-8, disables telemetry/automatic type acquisition, checks
   with no emit, and has no network or package manager in its closure/search path.
   It shares private snapshot, input verification and cleanup with Rust. Protocol
-  framing and aggregate responses, 10,000 call sites, 16 candidates per site and
+  framing and aggregate responses, 10,000 evidence sites, 16 candidates per site,
+  10,000 binding uses per definition and
   120 seconds per child bound the adapter. Definition navigation passes 100/100
   independently labelled eligible locations in the corpus frozen at `2c24bac`.
   Only sources in the compiler's bounded file list are opened; excluded sources
   do not become inferred LSP projects. Unicode/CRLF, same-line locations, source/config changes and missing-dependency
-  cleanup are covered separately. This does not establish static dispatch:
-  TypeScript combined-call queries remain unsupported until that gate is met.
+  cleanup are covered separately. The adapter also requests binding uses and
+  exact receiver definitions for the separate static-dispatch validator.
+  Overlapping reference groups cannot override an exact definition request.
 - [The call overlay](../src/scip/calls.rs) joins an exact AST call range to a
   semantic occurrence and a unique declaration name token in the same project.
   Rust free functions, inherent methods and tuple constructors are admitted;
@@ -91,6 +93,16 @@ does not establish the same recall on arbitrary projects or languages.
   `evidence=combined`; CLI/MCP results agree. Source/config changes, AST reindexing
   and validator/runner profile changes invalidate the overlay. AST remains the
   default and is independently queryable.
+- [The TypeScript validator](../src/scip/calls/typescript.rs) admits stable
+  functions/const function expressions and simple classes with exact module or
+  class identities. Instance methods require a fresh local or direct constructor
+  receiver whose uses do not escape. Type annotations alone prove no receiver.
+  Mutation, alias escape, inheritance, decorators (including fields), accessors,
+  constructor/default-parameter effects and escaping `this` block class targets.
+  Computed mutation/calls and `eval`/`Function` conservatively block all calls in
+  the selected profile. Validation has a shared one-million-node work budget.
+  The version `7.0.2+ast-index.1` distinguishes this binding-aware adapter from
+  old definition-only artifacts; those remain raw navigation evidence only.
 - Import replaces the previous semantic artifact. Queries check all imported
   documents and supplied configuration/lock inputs, with a combined 2,000-file
   bound; artifacts are capped at 4 MiB. This
@@ -134,8 +146,41 @@ dynamic trait receivers, unknown attributes on declarations/enclosing modules/
 callers, and cfg-disabled/unloaded targets.
 The independent all-reference baseline remains 21 linked AST calls out of 103
 and zero linked imports out of eight (21/111 overall, about 18.9%); status keeps
-that metric separate. TypeScript definition navigation passes, but its call-target
-recall/precision/safety acceptance remains open.
+that metric separate.
+
+## Executed TypeScript acceptance
+
+Corpus version: the TypeScript source labels frozen in commit `2c24bac` (unchanged).
+Producer: native TypeScript 7.0.2 with adapter profile `7.0.2+ast-index.1`.
+Command: `nix develop --command cargo test --offline --test quality typescript_combined -- --nocapture`.
+The same independent scorer, real producer and combined API used for Rust score
+all 100 eligible calls and three safety cases; raw definition navigation is
+checked separately. The fast gate runs both profiles and fails on missing tools.
+
+| Family | Eligible | AST correct | Combined correct | Combined wrong/missed |
+| --- | ---: | ---: | ---: | ---: |
+| Local/imported functions | 10 | 2 | 10 | 0/0 |
+| Qualified paths/aliases | 10 | 9 | 10 | 0/0 |
+| Re-exports | 10 | 0 | 10 | 0/0 |
+| Generics | 10 | 9 | 10 | 0/0 |
+| Concrete receivers | 10 | 0 | 10 | 0/0 |
+| Constructed values | 10 | 9 | 10 | 0/0 |
+| Associated functions | 10 | 0 | 10 | 0/0 |
+| Nested/same-line calls | 10 | 0 | 10 | 0/0 |
+| Lexical scopes | 10 | 5 | 10 | 0/0 |
+| Fixed control-flow family | 10 | 3 | 10 | 0/0 |
+| Total | 100 | 37 | 100 | 0/0 |
+
+This corpus yields 100% recall and 100% precision for the combined profile;
+all three explicit dynamic cases abstain. Separate real-compiler projects test
+22 mutation/escape/dispatch counterexamples, each with an unrelated positive
+control except two deliberate whole-profile dynamic cases. They exposed unsafe
+namespace-parameter inference and field-decorator effects before their fixes.
+TSX, CLI/MCP parity, source/config invalidation and definition-only artifact
+compatibility also have regressions. The result applies to this closed project
+snapshot and named profile, not arbitrary runtime mutation or other languages.
+The independent AST link count stays at 37 of 103 calls and five of five imports
+(42/108 overall, about 38.9%); it is not the combined profile's accuracy score.
 
 ## Implementation order and exit criteria
 

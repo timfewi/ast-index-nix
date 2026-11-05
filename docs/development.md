@@ -29,8 +29,10 @@ Exact reference ranges re-extract legacy rows. The Rust corpus freezes 101
 eligible calls plus two abstention cases; TypeScript freezes 100 plus three.
 Oracle self-tests verify accounting and failure thresholds; a separate real Rust
 acceptance test passes with 101 correct targets, no wrong targets and two dynamic
-abstentions. TypeScript definition navigation passes all 100 labelled locations;
-its separate static-dispatch acceptance remains open. Both corpora typecheck
+abstentions. TypeScript separately passes definition navigation and static-call
+acceptance at all 100 labelled locations, with three dynamic abstentions.
+Additional isolated counterexamples cover mutation, escape, decorators,
+constructor effects and namespace-shaped parameters. Both corpora typecheck
 without project dependencies. Generic-call,
 constructor and commented-path regressions cover extraction and lexical scope.
 Manifest inputs make configuration/lock changes exclude stale evidence. Schema 9

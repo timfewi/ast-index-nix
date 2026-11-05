@@ -187,10 +187,8 @@ fn rust_combined_profile_meets_independent_recall_precision_and_safety_gate() {
     );
 }
 
-/// This verifies definition navigation only. Overridable receivers can still
-/// navigate to a declaration, so these observations must not become call edges.
 #[test]
-fn typescript_producer_definitions_match_the_frozen_navigation_labels() {
+fn typescript_combined_profile_meets_independent_recall_precision_and_safety_gate() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("project");
     fs::create_dir_all(root.join("src")).unwrap();
@@ -262,14 +260,19 @@ fn typescript_producer_definitions_match_the_frozen_navigation_labels() {
         "typescript definition navigation: {correct}/100; static-dispatch acceptance is separate"
     );
     assert_eq!(correct, 100);
-    assert!(
-        engine
-            .execute(&Query {
-                action: "refs".into(),
-                evidence: Some("combined".into()),
-                ..Default::default()
-            })
-            .is_err(),
-        "raw definition evidence is not yet a supported TypeScript call profile"
+    let baseline_rows = references(&engine, "ast");
+    let baseline = observations(&engine, &baseline_rows, TYPESCRIPT_CORPUS, "typescript");
+    let combined_rows = references(&engine, "combined");
+    let combined = observations(&engine, &combined_rows, TYPESCRIPT_CORPUS, "typescript");
+    report(&cases, &baseline, "typescript/ast");
+    report(&cases, &combined, "typescript/combined");
+    eprintln!(
+        "all-reference links remain separate: {:?}",
+        engine.status().unwrap().reference_coverage
+    );
+    assert!(evaluator::score(&cases, &combined).passes());
+    assert_eq!(
+        serde_json::to_value(references(&engine, "ast")).unwrap(),
+        serde_json::to_value(baseline_rows).unwrap()
     );
 }

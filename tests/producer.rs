@@ -3,6 +3,9 @@
 use ast_index::{Engine, producer, query::Query};
 use std::fs;
 
+#[path = "producer/typescript.rs"]
+mod typescript;
+
 #[test]
 fn typescript_producer_uses_native_definitions_without_scripts_or_installation() {
     let directory = tempfile::tempdir().unwrap();

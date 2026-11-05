@@ -10,7 +10,7 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/imports.rs](../src/imports.rs), [src/resolve.rs](../src/resolve.rs), [src/resolve/go.rs](../src/resolve/go.rs): static indexed-file dependencies, Go package lookup and conservative call/SQL object relationships.
 - [src/store.rs](../src/store.rs), [src/store/query.rs](../src/store/query.rs), [src/store/history.rs](../src/store/history.rs): additive schema, writer lock, SQL projections, bounded traversal and two structural snapshots.
 - [src/query.rs](../src/query.rs), [src/engine.rs](../src/engine.rs), [src/report.rs](../src/report.rs): shared contracts, validation, cursors and text.
-- [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs), [src/scip/calls.rs](../src/scip/calls.rs): local SCIP import, source verification and independent static-call overlay.
+- [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs), [src/scip/calls.rs](../src/scip/calls.rs), [src/scip/calls/typescript.rs](../src/scip/calls/typescript.rs): local SCIP import, source verification and independent Rust/TypeScript static-call overlays.
 - [src/producer.rs](../src/producer.rs), [src/producer/typescript.rs](../src/producer/typescript.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private snapshots, offline per-producer tool closures, patched Rust SCIP and native TypeScript LSP; no invocation from queries.
 - [src/main.rs](../src/main.rs), [src/rpc.rs](../src/rpc.rs), [src/serve.rs](../src/serve.rs): CLI, single-tool MCP and socket/proxy adapters.
 
@@ -29,6 +29,8 @@ JS/TS named and namespace imports can interoperate; explicit Rust use bindings
 expand crate/self/super paths with aliases and grouped imports. Shadowing and
 reassignment block targets. AST-only globs/inferred receivers remain unsupported;
 the optional Rust semantic profile can establish unique inherent receiver targets.
+TypeScript requires actual module/class identities and fresh, nonescaping simple
+class instances; typed receivers, mutation, decorators and effects abstain.
 Nix/Lua calls remain local. Shell source
 paths retain unresolved working directories. Go module hashes govern freshness;
 Lua requires use project-root layouts. SQL `dependency` refs are separate from
@@ -50,9 +52,9 @@ validator/runner fingerprint changes require refresh. Sources and returned code
 remain untrusted data.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust acceptance and remaining TypeScript/dependency/host integration work.
-- [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[acceptance](../tests/quality/acceptance.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent labels; actual Rust combined gate passes 101/101 with no wrong targets and two abstentions. TypeScript call-target accuracy remains unverified.
-- [Producer smoke](../tests/producer.rs): real offline Rust/TypeScript import, build-script canary, temporary artifact cleanup, UTF-8/CRLF and lockfile invalidation. TypeScript definitions match 100/100 frozen locations; combined-call validation and dependency provisioning remain open.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust/TypeScript acceptance and remaining dependency/host integration work.
+- [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[acceptance](../tests/quality/acceptance.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent labels; Rust combined passes 101/101 with no wrong targets and two abstentions; TypeScript passes 100/100 with three abstentions. Neither is an arbitrary-project guarantee.
+- [Producer smoke](../tests/producer.rs)/[TypeScript safety](../tests/producer/typescript.rs): real offline Rust/TypeScript import, build-script canary, temporary artifact cleanup, UTF-8/CRLF, TSX and lockfile invalidation. Isolated mutation/escape/decorator/constructor cases abstain. Dependency provisioning remains open.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.

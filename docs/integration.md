@@ -103,7 +103,7 @@ See [Queries](../README.md#queries) for actions, selectors, filters and cursors.
 JSON list results contain `items`, `generation`, `truncated` and `next_cursor`;
 `describe` contains the selected symbol and both relationship pages. Imported
 raw semantic evidence is separate from AST relationships. For an explicitly
-refreshed Rust project/profile, `evidence: "combined"` selects validated call
+refreshed Rust or TypeScript project/profile, `evidence: "combined"` selects validated call
 targets in refs/describe/callers/callees/impact; default queries remain AST-only.
 The combined view fails if source/configuration, AST generation or validator/
 runner profile no longer matches. Unconfirmed calls within its input profile

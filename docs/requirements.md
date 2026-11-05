@@ -51,7 +51,7 @@ The current fast gate and remaining coverage limits are recorded in
 | R37 | MCP references, resolution provenance/reasons and coverage counts | done | `list_actions_page_consistently_and_references_explain_dynamic_imports`, shared `Engine::execute` projections |
 | R38 | Deterministic byte-budgeted repository maps with signatures and heuristic labels | done | `maps_and_snapshots_report_actual_structural_changes` |
 | R39 | Explicit changed ranges, two retained snapshots, deleted-symbol impact and unavailable-baseline errors | done | `maps_and_snapshots_report_actual_structural_changes` |
-| R40 | Local opt-in SCIP ingestion with separate provenance and unchanged AST graph | done | `scip::tests::semantic_evidence_is_separate_and_excluded_when_source_changes`, CLI/MCP semantic parity; explicit Rust combined view additionally tested by `scip::calls::tests::*` |
+| R40 | Local opt-in SCIP ingestion with separate provenance and unchanged AST graph | done | `scip::tests::semantic_evidence_is_separate_and_excluded_when_source_changes`, CLI/MCP semantic parity; explicit Rust/TypeScript combined views tested by call-overlay, producer and quality tests |
 | R41 | SCIP source/manifest validation, ranges, paths, versions, symlinks, bounded decoding and atomic rejection | done | remaining `scip::tests::*` |
 | R42 | Parser/query reuse, unchanged-resolution reuse, conservative invalidation and indexed exact/prefix queries | done | `unchanged_scans_skip_resolution_but_project_boundaries_invalidate_it`, `exact_and_prefix_use_indexes_while_contains_is_a_bounded_scan`; parser cache source review |
 | R43 | Default derived-state paths cannot follow source-controlled symlinks | done | `source_controlled_symlinks_cannot_redirect_default_index_writes` |
@@ -92,12 +92,12 @@ type-only imports, CLI/MCP status parity and coverage count conservation.
 
 The proposed implementation sequence and privacy boundary are in
 [semantic-quality.md](semantic-quality.md). Positions, synthetic corpora and the
-offline Rust runner and opt-in validated Rust calls are implemented. The frozen
-Rust corpus passes the recall/precision gate; TypeScript call-dispatch acceptance and
-general project dependency provisioning remain open. A producer smoke alone
+offline Rust/TypeScript runners and opt-in validated calls are implemented. Both
+frozen corpora pass the recall/precision gate; general project dependency
+provisioning and host refresh integration remain open. A producer smoke alone
 does not establish accuracy, and the corpus result is not an arbitrary-project claim.
-The offline TypeScript adapter passes definition navigation for all 100 labelled
-eligible sites; this is separate from its still-unimplemented call overlay.
+The TypeScript adapter passes definition navigation and, separately, static-call
+acceptance for all 100 labelled eligible sites; mutation/escape cases abstain.
 
 A 90%+ target needs a versioned, independently labelled corpus of internal
 statically resolvable references, per language. Measure recall against its expected

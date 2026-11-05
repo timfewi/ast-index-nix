@@ -10,6 +10,16 @@ use std::{
 };
 use tree_sitter::{Node, Point};
 
+mod typescript;
+
+pub(super) fn profile(tool: &wire::ToolInfo) -> Option<&'static str> {
+    match (tool.name.as_str(), tool.version.as_str()) {
+        ("rust-analyzer", "2026-09-21") => Some("rust-analyzer-2026-09-21"),
+        ("typescript-lsp", "7.0.2+ast-index.1") => Some("typescript-lsp-7.0.2-v1"),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Definition {
     file: String,
@@ -31,7 +41,16 @@ pub(crate) fn fingerprint() -> String {
     let mut hash = blake3::Hasher::new();
     hash.update(include_bytes!("calls.rs"));
     hash.update(include_bytes!("../producer.rs"));
-    hash.update(crate::lang::by_id("rust").unwrap().fingerprint().as_bytes());
+    hash.update(include_bytes!("../producer/typescript.rs"));
+    hash.update(include_bytes!("calls/typescript.rs"));
+    for language in ["rust", "typescript", "tsx"] {
+        hash.update(
+            crate::lang::by_id(language)
+                .unwrap()
+                .fingerprint()
+                .as_bytes(),
+        );
+    }
     hash.finalize().to_hex().to_string()
 }
 
@@ -130,9 +149,18 @@ pub(super) fn build(
 ) -> Result<Vec<Call>> {
     // A producer/version outside an exercised profile remains navigable as raw
     // semantic evidence but cannot change the call graph.
-    if tool.name != "rust-analyzer" || tool.version != "2026-09-21" {
+    if profile(tool).is_none() {
         return Ok(Vec::new());
     }
+    let typescript = tool.name == "typescript-lsp";
+    let supported_language = |language: &str| {
+        if typescript {
+            matches!(language, "typescript" | "tsx")
+        } else {
+            language == "rust"
+        }
+    };
+    let mut typescript_files = BTreeMap::new();
     let mut definitions = BTreeMap::<String, Vec<Definition>>::new();
     let mut sites = BTreeMap::<(String, [u32; 4]), BTreeSet<String>>::new();
     let mut malformed = BTreeSet::new();
@@ -141,7 +169,7 @@ pub(super) fn build(
         for file in inputs.keys() {
             if store
                 .file_state(file)?
-                .is_some_and(|state| state.lang == "rust")
+                .is_some_and(|state| supported_language(&state.lang))
             {
                 profile_files.insert(file.clone());
             }
@@ -151,7 +179,7 @@ pub(super) fn build(
     let mut total = 0;
     for (document, hash) in documents
         .iter()
-        .filter(|(d, _)| d.language.to_lowercase() == "rust")
+        .filter(|(d, _)| supported_language(&d.language.to_lowercase()))
     {
         let bytes = source(
             root,
@@ -165,8 +193,9 @@ pub(super) fn build(
         let text =
             std::str::from_utf8(&bytes).map_err(|_| invalid("semantic source must be UTF-8"))?;
         let mut parser = tree_sitter::Parser::new();
+        let spec = crate::lang::by_id(&document.language.to_lowercase()).unwrap();
         parser
-            .set_language(&crate::lang::by_id("rust").unwrap().language())
+            .set_language(&spec.language())
             .map_err(|_| invalid("cannot initialize semantic call parser"))?;
         let tree = parser
             .parse(text, None)
@@ -177,7 +206,7 @@ pub(super) fn build(
         let state = store
             .file_state(file)?
             .ok_or_else(|| invalid("semantic document must be indexed"))?;
-        if state.fingerprint != crate::lang::by_id("rust").unwrap().fingerprint() {
+        if state.fingerprint != spec.fingerprint() {
             return Err(invalid(
                 "AST extraction profile changed; reindex before importing semantic calls",
             ));
@@ -213,7 +242,12 @@ pub(super) fn build(
             let range = utf8_range(occurrence, &lines, document.position_encoding, &mut budget)?;
             let identity = symbol_key(file, &occurrence.symbol)?;
             if occurrence.symbol_roles & 1 != 0 {
-                let (declaration, static_dispatch) = rust_definition(tree.root_node(), range)
+                let found = if typescript {
+                    typescript::declaration(tree.root_node(), range).map(|node| (node, true))
+                } else {
+                    rust_definition(tree.root_node(), range)
+                };
+                let (declaration, static_dispatch) = found
                     .map_or((None, false), |(node, proven)| {
                         (Some(node), proven && !tree.root_node().has_error())
                     });
@@ -233,13 +267,14 @@ pub(super) fn build(
                     project: state.project.clone(),
                     static_dispatch,
                 });
-            } else if !tree
-                .root_node()
-                .named_descendant_for_point_range(
-                    Point::new(range[0] as usize, range[1] as usize),
-                    Point::new(range[2] as usize, range[3] as usize),
-                )
-                .is_some_and(rust_attributed)
+            } else if typescript
+                || !tree
+                    .root_node()
+                    .named_descendant_for_point_range(
+                        Point::new(range[0] as usize, range[1] as usize),
+                        Point::new(range[2] as usize, range[3] as usize),
+                    )
+                    .is_some_and(rust_attributed)
             {
                 sites
                     .entry((file.clone(), range))
@@ -247,19 +282,37 @@ pub(super) fn build(
                     .insert(identity);
             }
         }
+        if typescript {
+            typescript_files.insert(
+                file.clone(),
+                typescript::File {
+                    text: text.to_owned(),
+                    tree,
+                },
+            );
+        }
     }
+    let validator = if typescript {
+        Some(typescript::Validator::new(
+            typescript_files,
+            &definitions,
+            &sites,
+        )?)
+    } else {
+        None
+    };
     let mut calls = Vec::new();
-    let mut reference = store.conn.prepare("SELECT r.id,r.resolved_symbol_id,f.project FROM refs r JOIN files f ON f.id=r.file_id WHERE f.path=?1 AND r.kind='call' AND r.source_range=?2")?;
+    let mut reference = store.conn.prepare("SELECT r.id,r.resolved_symbol_id,f.project,r.blocked FROM refs r JOIN files f ON f.id=r.file_id WHERE f.path=?1 AND r.kind='call' AND r.source_range=?2")?;
     for ((file, range), identities) in sites {
-        let refs: Vec<(i64, Option<i64>, String)> = reference
+        let refs: Vec<(i64, Option<i64>, String, Option<String>)> = reference
             .query_map(params![file, serde_json::to_string(&range)?], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
         if refs.len() != 1 {
             continue;
         }
-        let (id, ast, project) = &refs[0];
+        let (id, ast, project, blocked) = &refs[0];
         let target_count: usize = identities
             .iter()
             .map(|identity| definitions.get(identity).map_or(0, Vec::len))
@@ -278,6 +331,11 @@ pub(super) fn build(
         };
         let admitted = unique
             .filter(|d| d.static_dispatch && d.project == *project && !malformed.contains(&file))
+            .filter(|d| {
+                validator
+                    .as_ref()
+                    .is_none_or(|v| v.admits(&file, range, d, blocked.as_deref()))
+            })
             .and_then(|d| d.symbol);
         let conflict = admitted.is_some() && ast.is_some() && admitted != *ast;
         let reason = if conflict {
@@ -336,28 +394,24 @@ pub(super) fn build(
     Ok(calls)
 }
 
-pub(super) fn persist(store: &Store, calls: &[Call], supported: bool) -> Result<()> {
+pub(super) fn persist(store: &Store, calls: &[Call], profile: Option<&str>) -> Result<()> {
     store.conn.execute("DELETE FROM semantic_calls", [])?;
     for call in calls {
         store.conn.execute("INSERT INTO semantic_calls(ref_id,target_id,reason,confidence,evidence) VALUES(?1,?2,?3,?4,?5)", params![call.reference,call.target,call.reason,call.confidence,serde_json::to_string(&call.evidence)?])?;
     }
     store.set_meta("semantic_call_generation", &store.generation()?.to_string())?;
-    store.set_meta(
-        "semantic_call_profile",
-        if supported {
-            "rust-analyzer-2026-09-21"
-        } else {
-            "unsupported"
-        },
-    )?;
+    store.set_meta("semantic_call_profile", profile.unwrap_or("unsupported"))?;
     store.set_meta("semantic_call_fingerprint", &fingerprint())?;
     Ok(())
 }
 
 pub(crate) fn require_current(root: &Path, store: &Store) -> Result<Value> {
-    if store.meta("semantic_call_profile")?.as_deref() != Some("rust-analyzer-2026-09-21") {
+    if !matches!(
+        store.meta("semantic_call_profile")?.as_deref(),
+        Some("rust-analyzer-2026-09-21" | "typescript-lsp-7.0.2-v1")
+    ) {
         return Err(invalid(
-            "no supported semantic call profile; refresh with the pinned Rust runner",
+            "no supported semantic call profile; refresh with the matching pinned semantic runner",
         ));
     }
     if store.meta("semantic_call_generation")?.as_deref() != Some(&store.generation()?.to_string())
@@ -666,6 +720,52 @@ mod tests {
             "2026-09-21",
         );
         assert!(engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_null());
+    }
+
+    #[test]
+    fn definition_only_typescript_artifacts_cannot_enable_combined_calls() {
+        let text = "function target() {}\nfunction caller() {target();}\n";
+        let (_directory, engine) = fixture(&[("main.ts", text)]);
+        let mut doc = document(
+            "main.ts",
+            text,
+            1,
+            vec![
+                occurrence(text, "target", 0, "target", true, 1),
+                occurrence(text, "target", 1, "target", false, 1),
+            ],
+        );
+        doc.language = "typescript".into();
+        let artifact = wire::Index {
+            metadata: Some(wire::Metadata {
+                version: 0,
+                project_root: "file:///synthetic".into(),
+                text_document_encoding: 1,
+                tool_info: Some(wire::ToolInfo {
+                    name: "typescript-lsp".into(),
+                    version: "7.0.2".into(),
+                }),
+            }),
+            documents: vec![doc],
+        };
+        let path = engine.root().join("legacy.scip");
+        std::fs::write(&path, artifact.encode_to_vec()).unwrap();
+        super::super::import(engine.root(), engine.store(), &path, None).unwrap();
+        assert!(
+            engine
+                .execute(&request("refs", None))
+                .unwrap_err()
+                .to_string()
+                .contains("no supported semantic call profile")
+        );
+        let raw = engine
+            .execute(&Query {
+                action: "semantic".into(),
+                relation: Some("reference".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(raw["items"].as_array().unwrap().len(), 1);
     }
 
     #[test]

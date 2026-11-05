@@ -69,6 +69,7 @@
               ./tests/integration.rs
               ./tests/quality.rs
               ./tests/producer.rs
+              ./tests/producer
               ./tests/quality
             ];
           };

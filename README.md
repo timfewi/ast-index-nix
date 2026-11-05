@@ -320,11 +320,12 @@ The [frozen synthetic Rust corpus](docs/semantic-quality.md#executed-rust-accept
 passes with 101/101 correct targets, zero wrong targets and two dynamic abstentions.
 This is a corpus result, not a blanket accuracy claim for real projects or languages.
 
-TypeScript definition evidence has a separate explicit adapter:
+TypeScript evidence has a separate explicit adapter:
 
 ```bash
 ast-index-semantic typescript --root ./project --state-dir ./private-state
 ast-index --root ./project --state-dir ./private-state semantic --relation definition --json
+ast-index --root ./project --state-dir ./private-state callees caller --evidence combined --json
 ```
 
 It uses pinned TypeScript 7.0.2's native LSP with UTF-8 positions, after a successful
@@ -337,8 +338,14 @@ acquisition and telemetry are disabled; the sandbox has no network or package
 manager on its executable search path. Protocol responses, candidate counts and
 runtime are bounded. Missing dependencies/configuration fail explicitly, without
 retaining diagnostics. The synthetic corpus yields 100/100 correct definition
-locations. TypeScript `combined` call evidence remains unavailable until its
-separate dispatch/safety validator passes; definition navigation is not that proof.
+locations and, separately, 100/100 correct combined call targets, with all three
+dynamic cases unresolved. The validator admits stable functions and methods on
+verified simple classes; instance calls need a fresh, nonescaping receiver.
+Structural receiver types, mutation, inheritance, decorators and constructor
+effects abstain. Additional isolated safety tests cover these limits. This is a
+[named corpus/profile result](docs/semantic-quality.md#executed-typescript-acceptance),
+not a guarantee for arbitrary projects. Old definition-only TypeScript artifacts
+require an explicit refresh before `combined` is available.
 
 ## Resource limits and local state
 

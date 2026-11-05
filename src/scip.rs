@@ -334,7 +334,7 @@ pub fn import(
             }
         }
         store.bump_generation()?;
-        calls::persist(store, &calls, tool.name == "rust-analyzer" && tool.version == "2026-09-21")?;
+        calls::persist(store, &calls, calls::profile(&tool))?;
         stats.generation=store.generation()?;
         Ok(stats)
     })
