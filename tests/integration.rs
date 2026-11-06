@@ -1295,6 +1295,77 @@ fn exclude_patterns_skip_subtrees() {
 }
 
 #[test]
+fn changed_exclusions_cannot_reveal_previously_allowed_files_through_history() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("public.rs"), "fn public() {}\n").unwrap();
+    std::fs::write(
+        root.path().join("private.rs"),
+        "fn SYNTHETIC_PRIVATE_HISTORY() {}\n",
+    )
+    .unwrap();
+    run_cli_json(root.path(), &["index", "--json"]);
+    std::fs::write(
+        root.path().join("public.rs"),
+        "fn public() { let n = 1; }\n",
+    )
+    .unwrap();
+    run_cli_json(root.path(), &["index", "--json"]);
+    assert!(run_cli(root.path(), &["diff", "--json"]).status.success());
+    run_cli_json(root.path(), &["index", "--exclude", "private.rs", "--json"]);
+    assert!(
+        raw_json(
+            root.path(),
+            &["search", "SYNTHETIC_PRIVATE_HISTORY", "--json"]
+        )["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let history = run_cli(root.path(), &["diff", "--json"]);
+    assert!(
+        !history.status.success(),
+        "changed exclusion policy must discard the old comparison: {}",
+        String::from_utf8_lossy(&history.stdout)
+    );
+    assert!(String::from_utf8_lossy(&history.stderr).contains("no previous structural snapshot"));
+    std::fs::write(
+        root.path().join("public.rs"),
+        "fn public() { let n = 2; }\n",
+    )
+    .unwrap();
+    run_cli_json(root.path(), &["index", "--exclude", "private.rs", "--json"]);
+    let history = raw_json(root.path(), &["diff", "--json"]);
+    assert!(!history.to_string().contains("private.rs"));
+    assert!(!history["items"].as_array().unwrap().is_empty());
+    let engine = ast_index::Engine::open(root.path(), None).unwrap();
+    let generation = engine.store().generation().unwrap();
+    assert!(
+        engine
+            .index(&ast_index::IndexOptions {
+                exclude: vec!["public.rs".into()],
+                max_files: 0,
+                ..Default::default()
+            })
+            .is_err()
+    );
+    assert_eq!(
+        engine.store().generation().unwrap(),
+        generation,
+        "an incomplete policy change rolls back"
+    );
+    engine
+        .store()
+        .set_meta("history_scope_version", "0")
+        .unwrap();
+    assert!(!run_cli(root.path(), &["diff", "--json"]).status.success());
+    run_cli_json(root.path(), &["index", "--exclude", "private.rs", "--json"]);
+    assert!(
+        !run_cli(root.path(), &["diff", "--json"]).status.success(),
+        "legacy snapshots are discarded even when exclusions are unchanged"
+    );
+}
+
+#[test]
 fn reports_not_indexed_with_exit_code_two() {
     let fixture = fixture();
     let output = run_cli(fixture.path(), &["search", "helper"]);

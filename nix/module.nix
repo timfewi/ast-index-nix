@@ -158,7 +158,7 @@ in
       }
     ];
 
-    environment.systemPackages = [ package ];
+    environment.systemPackages = [ package ] ++ lib.optional cfg.semantic.enable cfg.semantic.package;
 
     systemd = {
       services = {

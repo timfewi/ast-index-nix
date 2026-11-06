@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "entry_sha256": "5b5b5795601f39d531ea0ab2ba9f2d7045f9f7b49ad8669e62c304a97b69457b",
+  "entry_sha256": "b212bafb06dfdd901ba30e665e8a79ef83727898830f19341e36edfb69b1cdc5",
   "sources": {
     "docs/architecture.md": "9b9c80a80a19284d3b04259d2db9b2aa689d9f6d7f1d866e23c336904f7f3671",
     "docs/decisions.md": "60723da4f213dd15db8b9ca0a6d8eed532471b2baad145c6838553cc26a6ab64",
@@ -8,11 +8,11 @@
     "docs/requirements.md": "b945db00126a65a525e22380310311634a7c31cb06c9b981a46d9e3c18365ec6",
     "docs/semantic-quality.md": "24199c34c56a6898ba4d865e961cbce4975c48ada4fbf1fef0097e77680c3c1d",
     "flake.nix": "1b2031574328a8eadc5d1ddbe5573793033f5fe5cf05598ecce36fbe9aa5e52f",
-    "nix/module.nix": "85f47f4b4257468f007a45675db1e6cf95532578d3048a31aaf5bf393e4c77b9",
+    "nix/module.nix": "3345c4b4e29ce9a41b21ad94c067b2c3750e6d32b1a8da514446545048b4fc31",
     "src/bin/ast-index-semantic.rs": "bb5eaf2e366e7f7da08e717232659d82037029e45836ccc1cfb898dcc79697e5",
     "src/engine.rs": "afa42835e6219b819837ec8b265d0e37ed40a9bfc8d0927a4d2573c2da8aadef",
     "src/imports.rs": "7bed8ba29bb04829f5f123691f10d69d85822321c062b9b8435a55457cd12ad9",
-    "src/index.rs": "612ae331b29b5168142473cc426918161a6bdd4cbf1b3c5cbc6f4d173465bb8d",
+    "src/index.rs": "e723cdaae29a1bd502fb567aa2b835f6976c99d38e09d09a4138f801d2f4b0a7",
     "src/lang.rs": "2edb3cd644d3d94934b117b451f53713678e129fa43a0296a7cee3e660624d39",
     "src/main.rs": "57e9249eaddcb8236aa160862449d6af36b6e824b28595dbf318b947eaad3986",
     "src/parse.rs": "0a4d80e00f04fbd6dcc6b7b3c9671f988feb649c571a1c95e43a1c35bb3c02cd",
@@ -37,10 +37,10 @@
     "src/scip/wire.rs": "680ea14c2119f6f141519d9bfb2d1c5c61881fe4840757b2a7091343461fd20e",
     "src/serve.rs": "38b9eec3b0402a20c120cdae00a73f86b37f50aae1b9c0e7ba5b0361ccdf6c45",
     "src/store.rs": "bb28125766962091965b69068b3d4c5a21a6b48d4cb483dfb154982c8062a897",
-    "src/store/history.rs": "36cb40d2212027481b44752b0ad1a5d96a487135745dfa85f7207402466fa9d2",
+    "src/store/history.rs": "cce4a7704625706485984334010bca564bb0c39a3b5d39aaf6cd3b03ba05a3e3",
     "src/store/query.rs": "54335dd3c450d6a465977c19158aeaf0f422302ba8935d2bb08b8ee17dd73efa",
-    "tests/integration.rs": "e09bbfd0c579b5b9eaa848644649e827f85da583d7ebd5d02680d254f0720995",
-    "tests/nix/module-eval.nix": "631cc911ab64afa52525699b5daa84b6829b4e892e965fde959b5f2c21c20b86",
+    "tests/integration.rs": "657d387d0cb2d2ab0beedbe763f9e8830ce8904aec168add6eb09ca7b5f81be4",
+    "tests/nix/module-eval.nix": "805d508dfed8b7799335822498e855d559a5838fb6c6edaecb7c8dac8033ee68",
     "tests/producer.rs": "ef44784c2fa1366373d7678bc4a46e2f944dcb87f8dce2616efaee13195c5ba2",
     "tests/producer/dependencies.rs": "967ee565a0d85c575a689cd6bd451158ea413a04e32d502261c449f631f8d638",
     "tests/producer/managed.rs": "4c03dd16a75413999f02ed395ad868b2499096e6e44a3f80e7f9c5d21e6b80cc",
@@ -56,14 +56,14 @@
   "cards": {
     "entry": {
       "path": ".tabula/ENTRY.md",
-      "sha256": "5b5b5795601f39d531ea0ab2ba9f2d7045f9f7b49ad8669e62c304a97b69457b",
+      "sha256": "b212bafb06dfdd901ba30e665e8a79ef83727898830f19341e36edfb69b1cdc5",
       "sections": {
         "entry/1-ast-index-nix-1": {
           "fingerprint": "62088369b5f3173216147e2a48a479e5bede949920b692b8a10dff333031d42c",
           "sources": {}
         },
         "entry/2-ownership-and-flow-1": {
-          "fingerprint": "7ed1bbf8d710121c63d85d8c971ba45b8cc13bc08b7593329138c405f0dd7be0",
+          "fingerprint": "c48f11aa675a23d30ed350c75ae2aff1e3afb205e78b7e41e3e019f51f18aadb",
           "sources": {
             "src/lang.rs": "2edb3cd644d3d94934b117b451f53713678e129fa43a0296a7cee3e660624d39",
             "src/parse.rs": "0a4d80e00f04fbd6dcc6b7b3c9671f988feb649c571a1c95e43a1c35bb3c02cd",
@@ -73,13 +73,13 @@
             "src/parse/go.rs": "bbaf5603ef90489901ff0feca51f0269dd710f170bb76a793ec6fb9e18fdd675",
             "src/parse/lua.rs": "1c1814d5be453b13aef52be7c05b03d2093aba31674bcbda3b200ee1620be8b6",
             "src/parse/sql.rs": "356aed7b72edd5614a58cba93fba18ee52484ed98bafc1aa54279d023bf3c086",
-            "src/index.rs": "612ae331b29b5168142473cc426918161a6bdd4cbf1b3c5cbc6f4d173465bb8d",
+            "src/index.rs": "e723cdaae29a1bd502fb567aa2b835f6976c99d38e09d09a4138f801d2f4b0a7",
             "src/imports.rs": "7bed8ba29bb04829f5f123691f10d69d85822321c062b9b8435a55457cd12ad9",
             "src/resolve.rs": "eede2728f4b1e3df16eae11d5da3f5f1b99129eff03872341bddcf9cd8cbc55f",
             "src/resolve/go.rs": "1b9856a802e2c9454695e36f0a13e8b4ccf296a8ebbf4f1036ca1c43d6482983",
             "src/store.rs": "bb28125766962091965b69068b3d4c5a21a6b48d4cb483dfb154982c8062a897",
             "src/store/query.rs": "54335dd3c450d6a465977c19158aeaf0f422302ba8935d2bb08b8ee17dd73efa",
-            "src/store/history.rs": "36cb40d2212027481b44752b0ad1a5d96a487135745dfa85f7207402466fa9d2",
+            "src/store/history.rs": "cce4a7704625706485984334010bca564bb0c39a3b5d39aaf6cd3b03ba05a3e3",
             "src/query.rs": "4643578b13a072d8234fee90a55835e7c6449f2891dce369434d511fa733fc9d",
             "src/engine.rs": "afa42835e6219b819837ec8b265d0e37ed40a9bfc8d0927a4d2573c2da8aadef",
             "src/report.rs": "cd571db4c19c760820678840118d0a48e4a4f768d42620698185834551803969",
@@ -96,15 +96,15 @@
             "src/rpc.rs": "9623d78151b2c9bdcb29ad4108c23976145327d0aee5dd67847223ac77d1a346",
             "src/serve.rs": "38b9eec3b0402a20c120cdae00a73f86b37f50aae1b9c0e7ba5b0361ccdf6c45",
             "src/profiles.rs": "68ab8ab086719f933ece540c006aed88ea50f3a4446ae362b3a1439d9f96ac8e",
-            "nix/module.nix": "85f47f4b4257468f007a45675db1e6cf95532578d3048a31aaf5bf393e4c77b9"
+            "nix/module.nix": "3345c4b4e29ce9a41b21ad94c067b2c3750e6d32b1a8da514446545048b4fc31"
           }
         },
         "entry/2-interfaces-and-limits-1": {
-          "fingerprint": "f4e4ae7481b45f63cc0dbb824f68ca03d6397a5670d78524f8a890c38f60c42e",
+          "fingerprint": "eba6b4cb5177a5bf21c05425a1d0cef978288f1420354894e084fced8e363fd6",
           "sources": {}
         },
         "entry/2-change-and-verify-1": {
-          "fingerprint": "f913b9a89c7f6a9bce6fbb6e3a744507a4173cdca9198081e700afb95d2957b1",
+          "fingerprint": "bf34026e6cdb16eab084b12e1652b069d6b8961ae5709de4197769de75dd2594",
           "sources": {
             "docs/semantic-quality.md": "24199c34c56a6898ba4d865e961cbce4975c48ada4fbf1fef0097e77680c3c1d",
             "tests/quality.rs": "f4e6d8c49b3cc31a807fd6ee79aceb5dcae993cd43972459162d6daee16a140b",
@@ -121,9 +121,9 @@
             "docs/architecture.md": "9b9c80a80a19284d3b04259d2db9b2aa689d9f6d7f1d866e23c336904f7f3671",
             "docs/decisions.md": "60723da4f213dd15db8b9ca0a6d8eed532471b2baad145c6838553cc26a6ab64",
             "docs/development.md": "9615c66ff0f882d0380cc283f00a3a27c83cdef041e579dd585b202e65123247",
-            "tests/integration.rs": "e09bbfd0c579b5b9eaa848644649e827f85da583d7ebd5d02680d254f0720995",
+            "tests/integration.rs": "657d387d0cb2d2ab0beedbe763f9e8830ce8904aec168add6eb09ca7b5f81be4",
             "tests/producer/managed.rs": "4c03dd16a75413999f02ed395ad868b2499096e6e44a3f80e7f9c5d21e6b80cc",
-            "tests/nix/module-eval.nix": "631cc911ab64afa52525699b5daa84b6829b4e892e965fde959b5f2c21c20b86"
+            "tests/nix/module-eval.nix": "805d508dfed8b7799335822498e855d559a5838fb6c6edaecb7c8dac8033ee68"
           }
         }
       }

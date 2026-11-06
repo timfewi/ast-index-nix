@@ -89,6 +89,7 @@ if
   && semanticRunner.serviceConfig.StateDirectory == "ast-index/instance-a/semantic"
   && semanticRunner.serviceConfig.ReadWritePaths == [ "/var/lib/ast-index/instance-a/semantic" ]
   && semanticRunner.serviceConfig.TimeoutStartSec == 600
+  && builtins.elem semantic.services.astIndex.semantic.package semantic.environment.systemPackages
   && nixpkgs.lib.hasInfix ''"--exclude" "/private/" "--exclude" "secrets/"'' semanticRunner.serviceConfig.ExecStart
   && nixpkgs.lib.hasInfix ''"--semantic-exclude" "/private/" "--semantic-exclude" "secrets/"'' semantic.systemd.services.ast-index.serviceConfig.ExecStart
   && semantic.systemd.timers.ast-index-semantic-refresh.timerConfig.OnUnitInactiveSec == "300s"

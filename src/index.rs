@@ -116,6 +116,15 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
     let go_modules = go_modules(&root, &candidates, options, &mut stats, &mut metadata_bytes)?;
     stats.resolution_recomputed |= store.meta("go_modules")?.as_deref() != Some(&go_modules);
     let existing: HashMap<String, _> = store.file_states()?.into_iter().collect();
+    let previous_options: Option<IndexOptions> = store
+        .meta("index_options")?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?;
+    let exclusions_changed = (store.is_indexed()?
+        && store.meta("history_scope_version")?.as_deref() != Some("1"))
+        || previous_options.is_some_and(|previous| {
+            previous.exclude != options.exclude || previous.exclude_prefix != options.exclude_prefix
+        });
 
     let mut present: HashSet<String> = HashSet::with_capacity(candidates.len());
     for candidate in &candidates {
@@ -198,6 +207,9 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         }
 
         let (symbols, refs): (i64,i64)=store.conn.query_row("SELECT (SELECT COUNT(*) FROM symbols),(SELECT COUNT(*) FROM refs)",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        if exclusions_changed && (!stats.scan_complete || stats.files_failed > 0) {
+            return Err(Error::Invalid("exclusion policy changes require a complete scan; previous index preserved".into()));
+        }
         if symbols>200_000 || refs>500_000 { return Err(Error::Invalid("index size budget exceeded (200000 symbols / 500000 references); narrow the root or exclusions".into())); }
         if stats.files_indexed > 0 || stats.files_removed > 0 || stats.resolution_recomputed {
             stats.resolution_recomputed=true;
@@ -208,11 +220,13 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         store.set_meta("last_indexed_at", &now_unix().to_string())?;
         store.set_meta("parser_versions", &serde_json::to_string(&lang::fingerprints())?)?;
         store.set_meta("index_options", &serde_json::to_string(options)?)?;
+        store.set_meta("history_scope_version", "1")?;
         stats.duration_ms=started.elapsed().as_millis();
         store.set_meta("health", &serde_json::to_string(&stats)?)?;
         store.set_meta("last_freshness_check", "null")?;
         store.bump_generation()?;
-        if stats.resolution_recomputed || store.generation()? == 1 {
+        if exclusions_changed { store.discard_snapshots()?; }
+        if exclusions_changed || stats.resolution_recomputed || store.generation()? == 1 {
             store.save_snapshot(stats.scan_complete && stats.files_failed == 0 && stats.parse_error_files == 0)?;
         }
         Ok(())

@@ -406,6 +406,9 @@ producer. Other queries continue to use the ordinary workspace AST index.
 Managed `freshness` is also read-only: it adds `semantic_current` to the usual
 AST comparison and reports stale when configuration/profile inputs no longer
 match, even with zero changed AST files. It does not persist a check timestamp.
+Changing an exclusion policy also discards earlier structural snapshots, so
+`diff`/`changes` cannot reveal previously allowed names. An incomplete policy
+change aborts the update; ordinary content updates retain bounded history.
 
 Normal indexing caps source files at 2 MiB each, scans at 100,000 source files and
 256 MiB, and stored symbols/references at 200,000/500,000. Traversal errors or scan

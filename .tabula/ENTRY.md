@@ -24,6 +24,8 @@ base; paths then refer to that project. Missing/stale profiles fail visibly.
 Managed freshness is read-only and includes `semantic_current`; ordinary workspace
 freshness retains its recorded check. Semantic configuration drift is reported
 even when AST source bytes match.
+Exclusion-policy changes discard prior structural snapshots and require a complete
+scan; historical queries cannot return names from the earlier policy.
 Schema 9 persists
 zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
 reindexing. Manifest inputs include configuration/lock hashes. Rust generic-call

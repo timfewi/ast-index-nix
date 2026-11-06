@@ -10,6 +10,14 @@ use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 
 impl Store {
+    /// Retained names must not cross an exclusion-policy change.
+    pub(crate) fn discard_snapshots(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM snapshot_edges; DELETE FROM snapshot_symbols; DELETE FROM snapshots;",
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn save_snapshot(&self, complete: bool) -> Result<()> {
         let generation = self.generation()?;
         let symbols: i64 = self
@@ -45,6 +53,9 @@ impl Store {
     }
 
     fn snapshot_pair(&self, baseline: Option<i64>) -> Result<(i64, i64)> {
+        if self.meta("history_scope_version")?.as_deref() != Some("1") {
+            return Err(Error::Invalid("structural history predates exclusion-policy tracking; reindex before comparing snapshots".into()));
+        }
         let current: Option<i64> =
             self.conn
                 .query_row("SELECT MAX(generation) FROM snapshots", [], |r| r.get(0))?;
