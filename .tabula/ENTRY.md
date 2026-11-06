@@ -59,6 +59,8 @@ callers/callees/impact; AST remains default and unchanged. Conflicts, trait disp
 attribute macros and ambiguity abstain. Source/config, AST generation and
 validator/runner fingerprint changes require refresh. Sources and returned code
 remain untrusted data.
+Producer package assertions bind Rust/TypeScript profiles to validated versions;
+shared consumer toolchain updates require acceptance revalidation.
 Runner manifests additionally detect selected-input additions/deletions with the
 same inventory policy and shared source/dependency limits. Legacy listed-file
 manifests only recheck their declared inputs and cannot enable combined calls;

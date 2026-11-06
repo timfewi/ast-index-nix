@@ -14,7 +14,7 @@ mod typescript;
 
 pub(super) fn profile(tool: &wire::ToolInfo) -> Option<&'static str> {
     match (tool.name.as_str(), tool.version.as_str()) {
-        ("rust-analyzer", "2026-09-21") => Some("rust-analyzer-2026-09-21"),
+        ("rust-analyzer", "2026-10-26") => Some("rust-analyzer-2026-10-26"),
         ("typescript-lsp", "7.0.2+ast-index.1") => Some("typescript-lsp-7.0.2-v1"),
         _ => None,
     }
@@ -404,7 +404,7 @@ pub(super) fn persist(store: &Store, calls: &[Call], profile: Option<&str>) -> R
 pub(crate) fn require_current(root: &Path, store: &Store) -> Result<Value> {
     if !matches!(
         store.meta("semantic_call_profile")?.as_deref(),
-        Some("rust-analyzer-2026-09-21" | "typescript-lsp-7.0.2-v1")
+        Some("rust-analyzer-2026-10-26" | "typescript-lsp-7.0.2-v1")
     ) {
         return Err(invalid(
             "no supported semantic call profile; refresh with the matching pinned semantic runner",
@@ -579,7 +579,7 @@ mod tests {
         import(
             &engine,
             vec![document("lib.rs", text, 1, occurrences.clone())],
-            "2026-09-21",
+            "2026-10-26",
         );
         let refs = engine.execute(&request("refs", None)).unwrap();
         assert_eq!(refs["items"][0]["reason"], "semantic_conflict");
@@ -610,7 +610,7 @@ mod tests {
         import(
             &engine,
             vec![document("lib.rs", text, 1, occurrences)],
-            "2026-09-21",
+            "2026-10-26",
         );
         let refs = engine.execute(&request("refs", None)).unwrap();
         assert_eq!(refs["items"][0]["reason"], "semantic_ambiguous");
@@ -621,7 +621,7 @@ mod tests {
         import(
             &engine,
             vec![document("lib.rs", text, 1, repeated)],
-            "2026-09-21",
+            "2026-10-26",
         );
         let refs = engine.execute(&request("refs", None)).unwrap();
         assert_eq!(refs["items"][0]["reason"], "semantic_ambiguous");
@@ -645,7 +645,7 @@ mod tests {
         import(
             &engine,
             vec![document("lib.rs", text, 2, occurrences)],
-            "2026-09-21",
+            "2026-10-26",
         );
         let refs = engine.execute(&request("refs", None)).unwrap();
         let items = refs["items"].as_array().unwrap();
@@ -695,7 +695,7 @@ mod tests {
         import(
             &engine,
             vec![document("lib.rs", text, 1, vec![definition.clone(), wrong])],
-            "2026-09-21",
+            "2026-10-26",
         );
         assert!(engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_null());
         let doc = document(
@@ -704,8 +704,10 @@ mod tests {
             1,
             vec![definition.clone(), reference.clone()],
         );
-        import(&engine, vec![doc.clone()], "unknown");
-        assert!(engine.execute(&request("refs", None)).is_err());
+        for version in ["unknown", "2026-09-21"] {
+            import(&engine, vec![doc.clone()], version);
+            assert!(engine.execute(&request("refs", None)).is_err());
+        }
         assert!(
             !engine
                 .execute(&Query {
@@ -728,7 +730,7 @@ mod tests {
                 1,
                 vec![definition, reference],
             )],
-            "2026-09-21",
+            "2026-10-26",
         );
         assert!(engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_null());
     }
@@ -754,7 +756,7 @@ mod tests {
                     occurrence(text, "target", 1, "target", false, 1),
                 ],
             )],
-            "2026-09-21",
+            "2026-10-26",
         );
         assert!(
             engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_number()
@@ -778,7 +780,7 @@ mod tests {
                     occurrence(text, "target", 1, "target", false, 1),
                 ],
             )],
-            "2026-09-21",
+            "2026-10-26",
         );
         assert!(
             engine.execute(&request("refs", None)).unwrap()["items"][0]["resolved"].is_number()
@@ -865,7 +867,7 @@ mod tests {
                     occurrence(target, "target", 1, "target", false, 1),
                 ],
             )],
-            "2026-09-21",
+            "2026-10-26",
         );
         assert_eq!(
             engine.execute(&request("refs", None)).unwrap()["items"][0]["reason"],
@@ -895,7 +897,7 @@ mod tests {
                     vec![occurrence(b, "target", 0, "target", true, 1)],
                 ),
             ],
-            "2026-09-21",
+            "2026-10-26",
         );
         let value = engine.execute(&request("refs", None)).unwrap();
         assert_eq!(value["items"][0]["reason"], "semantic_possible");

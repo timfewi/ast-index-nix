@@ -155,7 +155,7 @@ not decoded or persisted.
 The separate `ast-index-semantic` runner may explicitly generate evidence for one
 project. It mounts a bounded private source snapshot and the pinned tool closure
 inside Bubblewrap with no network/user-home mount; core queries still never start
-it. The rust-analyzer 2026-09-21 SCIP source hardcodes build-script and proc-macro
+it. The rust-analyzer 2026-10-26 SCIP source hardcodes build-script and proc-macro
 loading, so the package applies two fail-if-missing source replacements disabling
 those paths. Editor settings alone are insufficient. The original upstream checks
 remain enabled. Custom Cargo configuration and unavailable offline dependencies
@@ -165,6 +165,12 @@ configuration/locks, and raw artifacts are removed after import. Explicit
 inputs, not a discovered home cache. Cargo receives only fixed runner-owned
 crates.io source replacement in the private snapshot. TypeScript dependency
 declarations enable checking but never become internal call targets.
+
+The standalone lock and the coding-agents consumer share the same Nixpkgs source.
+Package assertions require rust-analyzer 2026-10-26 and native TypeScript 7.0.2;
+advancing a consumer's shared toolchain requires revalidating these named profiles
+and their independent acceptance corpora. Unknown or retired producer versions
+cannot enable combined calls. Exact source revisions remain in the lockfile.
 
 Checking only hashes of previously known files misses newly selected inputs.
 Runner manifests therefore carry a versioned, bounded inventory policy with no

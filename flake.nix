@@ -1,7 +1,7 @@
 {
   description = "Lightweight AST code index and query service for local agent harnesses";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
     { self, nixpkgs }:
@@ -15,6 +15,8 @@
       # settings. Fail at build time if upstream changes the reviewed contract.
       mkRustProducer =
         pkgs:
+        assert pkgs.lib.assertMsg (pkgs.rust-analyzer.version == "2026-10-26")
+          "Rust semantic evidence requires the validated rust-analyzer 2026-10-26 profile; revalidate before advancing the producer.";
         pkgs.rust-analyzer.override {
           pname = "ast-index-rust-analyzer";
           rust-analyzer-unwrapped = pkgs.rust-analyzer-unwrapped.overrideAttrs (old: {
@@ -27,6 +29,9 @@
         };
       mkSemanticEnvironment =
         pkgs:
+        assert pkgs.lib.assertMsg (
+          pkgs.typescript.version == "7.0.2"
+        ) "TypeScript semantic evidence requires the validated native 7.0.2 profile.";
         let
           analyzer = mkRustProducer pkgs;
           closure = pkgs.closureInfo {

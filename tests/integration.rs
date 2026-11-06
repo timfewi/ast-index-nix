@@ -103,7 +103,7 @@ fn semantic_call_overlay_has_cli_mcp_parity_and_keeps_ast_queries_available() {
         );
         assert_eq!(cli, mcp, "{action}");
         assert_eq!(cli["evidence"]["mode"], "combined");
-        assert_eq!(cli["evidence"]["version"], "2026-09-21");
+        assert_eq!(cli["evidence"]["version"], "2026-10-26");
     }
     let cli = raw_json(
         root,

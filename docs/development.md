@@ -11,7 +11,7 @@ imports, extraction/resolution fingerprints, schema version 9 and SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-79 unit, 58 integration, 6 quality tests and three real sandboxed producer
+85 unit, 61 integration, 6 quality tests and 11 real sandboxed producer
 tests, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution
@@ -42,7 +42,10 @@ ambiguity, Unicode position conversion, malformed source and project-boundary
 regressions pass, as does CLI/MCP parity across all supported combined actions.
 The separate Rust producer uses a private snapshot and an offline
 Bubblewrap process; its build-script/proc-macro CLI paths are disabled in the
-pinned producer source. A real canary test verifies build scripts do not execute.
+pinned producer source. The Rust 2026-10-26 and native TypeScript 7.0.2 profiles
+are revalidated against the same Nixpkgs toolchain used by coding-agents-nix;
+package assertions require revalidation before advancing either producer.
+A real canary test verifies build scripts do not execute.
 The TypeScript adapter uses the pinned native compiler LSP, with a separate tool
 closure and no package manager/network access. It disables automatic type
 acquisition and telemetry, requires a no-emit check, caps protocol data and checks

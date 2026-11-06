@@ -60,7 +60,7 @@ does not establish the same recall on arbitrary projects or languages.
   typechecks with the pinned TypeScript compiler. JS/TS constructor expressions
   now have exact AST call ranges; this fixes a demonstrated extraction gap.
 - [The Rust runner](../src/producer.rs) runs the pinned, patched rust-analyzer
-  2026-09-21 in Bubblewrap with only its tool closure, a read-only selected source
+  2026-10-26 in Bubblewrap with only its tool closure, a read-only selected source
   snapshot and private output. Network and user-home access are absent. Its SCIP
   entrypoint has build-script and proc-macro loading disabled in source; ordinary
   LSP settings do not disable those hardcoded CLI paths in this producer version.
@@ -115,17 +115,11 @@ does not establish the same recall on arbitrary projects or languages.
   does not make a workspace root into one compiler project. Managed refresh
   stores each explicitly selected project/profile separately and skips unchanged
   validated inputs; changed profiles are regenerated as bounded snapshots.
-- A local synthetic Rust smoke using rust-analyzer 2026-09-21 produced SCIP for
-  `value.tick()` where `value: &Counter`. AST resolution abstained; SCIP attached
-  the same symbol identity to the method token and its definition. The importer
-  required an artifact/source BLAKE3 manifest because this producer omitted
-  embedded source text. Changing the source made semantic queries exclude the
-  stale artifact. This proves that narrow data path, not a recall percentage.
 
 ## Executed Rust acceptance
 
 Corpus version: the Rust source labels frozen in commit `4a74f8d` (unchanged).
-Producer: pinned rust-analyzer 2026-09-21 with build scripts/proc macros disabled.
+Producer: pinned rust-analyzer 2026-10-26 with build scripts/proc macros disabled.
 Command: `nix develop --command cargo test --offline --test quality rust_combined -- --nocapture`.
 [The acceptance test](../tests/quality/acceptance.rs) queries real AST and combined
 results and translates actual definition positions without consulting gold labels.
