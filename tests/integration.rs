@@ -2052,7 +2052,7 @@ fn selectors_pagination_and_frontend_contracts() {
 }
 
 #[test]
-fn freshness_checks_bytes_and_reports_incomplete_coverage() {
+fn freshness_checks_bytes_and_reports_syntax_errors_separately() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let file = root.join("lib.rs");
@@ -2082,9 +2082,14 @@ fn freshness_checks_bytes_and_reports_incomplete_coverage() {
     assert_eq!(raw_json(root, &["status", "--json"])["freshness"], "stale");
     std::fs::write(&file, "fn broken( { ").unwrap();
     run_cli_json(root, &["index", "--json"]);
+    // Syntax errors limit extraction inside one file; every file was still read.
     let status = raw_json(root, &["status", "--json"]);
-    assert_eq!(status["freshness"], "incomplete");
+    assert_eq!(status["freshness"], "unknown", "{status}");
     assert_eq!(status["health"]["parse_error_files"], 1);
+    let checked = raw_json(root, &["freshness", "--json"]);
+    assert_eq!(checked["state"], "fresh_at_check", "{checked}");
+    assert_eq!(checked["complete"], true);
+    assert_eq!(checked["parse_error_files"], 1);
     let changes = raw_json(
         root,
         &[
@@ -2093,7 +2098,66 @@ fn freshness_checks_bytes_and_reports_incomplete_coverage() {
             "--json",
         ],
     );
-    assert_eq!(changes["current_coverage_complete"], false);
+    assert_eq!(changes["current_coverage_complete"], true);
+}
+
+#[test]
+fn syntax_errors_flag_partial_extraction_without_blocking_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn leaf() {}\nfn entry() { leaf(); }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("broken.rs"), "fn kept() {}\nfn broken( {\n").unwrap();
+    assert_eq!(
+        run_cli_json(root, &["index", "--json"])["parse_error_files"],
+        1
+    );
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn leaf() {}\nfn entry() { leaf(); }\nfn added() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("broken.rs"),
+        "fn kept() { added(); }\nfn broken( {\n",
+    )
+    .unwrap();
+    run_cli_json(root, &["index", "--json"]);
+
+    let diff = raw_json(root, &["diff", "--json"]);
+    let rows = diff["items"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|r| r["file"] == "lib.rs"
+            && r["change"] == "added"
+            && r["partial_extraction"] == false),
+        "{diff}"
+    );
+    assert!(rows.iter().any(|r| r["file"] == "broken.rs"), "{diff}");
+    for row in rows.iter().filter(|r| r["file"] == "broken.rs") {
+        assert_eq!(row["partial_extraction"], true, "{diff}");
+    }
+
+    let changes = r#"[{"file":"broken.rs","start_line":1,"end_line":1},{"file":"lib.rs","start_line":3,"end_line":3}]"#;
+    let impacted = raw_json(root, &["changes", changes, "--json"]);
+    assert_eq!(impacted["current_coverage_complete"], true, "{impacted}");
+    let rows = impacted["items"].as_array().unwrap();
+    for origin in ["current", "baseline"] {
+        assert!(
+            rows.iter().any(|r| r["origin"] == origin
+                && r["symbol"]["file"] == "broken.rs"
+                && r["partial_extraction"] == true),
+            "{impacted}"
+        );
+    }
+    assert!(
+        rows.iter().any(|r| r["origin"] == "current"
+            && r["symbol"]["name"] == "added"
+            && r["partial_extraction"] == false),
+        "{impacted}"
+    );
 }
 
 #[test]
@@ -2152,6 +2216,10 @@ fn incomplete_walk_retains_previously_indexed_files() {
     assert_eq!(
         stats["scan_complete"], false,
         "test requires an unprivileged user"
+    );
+    assert_eq!(
+        raw_json(root, &["status", "--json"])["freshness"],
+        "incomplete"
     );
     assert_eq!(
         raw_json(root, &["search", "retained", "--json"])["items"]

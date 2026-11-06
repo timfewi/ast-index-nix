@@ -227,7 +227,7 @@ pub fn index(root: &Path, store: &Store, options: &IndexOptions) -> Result<Index
         store.bump_generation()?;
         if exclusions_changed { store.discard_snapshots()?; }
         if exclusions_changed || stats.resolution_recomputed || store.generation()? == 1 {
-            store.save_snapshot(stats.scan_complete && stats.files_failed == 0 && stats.parse_error_files == 0)?;
+            store.save_snapshot(stats.scan_complete && stats.files_failed == 0)?;
         }
         Ok(())
     })?;
@@ -747,9 +747,10 @@ pub(crate) fn check_freshness(root: &Path, store: &Store) -> Result<crate::model
         .meta("health")?
         .map(|s| serde_json::from_str(&s))
         .transpose()?;
+    // Syntax errors are per-file extraction diagnostics, not unread coverage.
     stats.scan_complete &= health
         .as_ref()
-        .is_some_and(|h| h.scan_complete && h.files_failed == 0 && h.parse_error_files == 0);
+        .is_some_and(|h| h.scan_complete && h.files_failed == 0);
     examples.sort();
     let version_changed = store.meta("resolution_version")?.as_deref()
         != Some(&resolve::fingerprint())
@@ -768,6 +769,7 @@ pub(crate) fn check_freshness(root: &Path, store: &Store) -> Result<crate::model
         version_changed,
         examples,
         complete: stats.scan_complete,
+        parse_error_files: health.as_ref().map_or(0, |h| h.parse_error_files),
     };
     Ok(result)
 }

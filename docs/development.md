@@ -11,7 +11,7 @@ imports, extraction/resolution fingerprints, schema version 9 and SQL
 remain out of scope.
 
 Final verification: `nix develop --command bash scripts/check fast` passed with
-85 unit, 61 integration, 6 quality tests and 11 real sandboxed producer
+85 unit, 62 integration, 6 quality tests and 11 real sandboxed producer
 tests, formatting, Clippy (`-D warnings`), TypeScript corpus typechecking, deadnix,
 statix, Nix/Shell checks and both Linux output evaluations. Regressions cover
 CLI/MCP parity, freshness, package boundaries, ignored Go files, shell execution

@@ -44,7 +44,8 @@ Literal file import
 targets are separate from symbol call targets. SQL adds `table`/`view` symbol
 kinds and `dependency` references without treating relations as function calls.
 
-Schema version 9 upgrades older derived state additively. Extraction fingerprint
+Schema version 10 upgrades older derived state additively; it records the
+syntax-error files of each structural snapshot. Extraction fingerprint
 changes force reparsing even if file bytes have not changed. Existing incomplete
 snapshots that lack position information are marked unsuitable for comparison.
 Unknown newer schemas are rejected. An existing database is bound to its indexed
@@ -147,7 +148,9 @@ link to definitions. These ratios describe observed links, not semantic recall
 or accuracy; dynamic/external references remain in the totals.
 Explicit freshness reads compare current bytes, including same-size/same-mtime edits.
 Traversal errors retain absent indexed paths instead of asserting deletion.
-Known failed reads and parse errors produce incomplete coverage. Historical
+Known failed reads produce incomplete coverage. Syntax errors are counted per
+file and mark `diff`/`changes` rows as `partial_extraction`; they do not make
+coverage, freshness or snapshots incomplete. Historical
 successful freshness checks do not make later status calls claim current freshness.
 
 Repository maps rank bounded signatures using static graph counts and optional

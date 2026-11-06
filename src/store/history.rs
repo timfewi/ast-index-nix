@@ -1,5 +1,7 @@
 //! Two bounded structural snapshots. Ids are local to a snapshot; comparisons
 //! use file/kind/qualified identities and report duplicate identities explicitly.
+//! Coverage requires every file to be read; files with syntax errors stay
+//! comparable and their results are marked as partial extraction.
 use super::{Store, symbol_from_row};
 use crate::{
     error::{Error, Result},
@@ -13,7 +15,7 @@ impl Store {
     /// Retained names must not cross an exclusion-policy change.
     pub(crate) fn discard_snapshots(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM snapshot_edges; DELETE FROM snapshot_symbols; DELETE FROM snapshots;",
+            "DELETE FROM snapshot_edges; DELETE FROM snapshot_symbols; DELETE FROM snapshot_parse_errors; DELETE FROM snapshots;",
         )?;
         Ok(())
     }
@@ -46,7 +48,16 @@ impl Store {
             self.conn.execute("INSERT INTO snapshot_edges SELECT ?1, from_symbol_id, resolved_symbol_id, f.path, r.line, r.reason
                 FROM refs r JOIN files f ON f.id = r.file_id WHERE r.kind = 'call' AND r.resolved_symbol_id IS NOT NULL", [generation])?;
         }
-        for table in ["snapshot_symbols", "snapshot_edges", "snapshots"] {
+        self.conn.execute(
+            "INSERT INTO snapshot_parse_errors(generation, file) SELECT ?1, path FROM files WHERE parse_errors = 1",
+            [generation],
+        )?;
+        for table in [
+            "snapshot_symbols",
+            "snapshot_edges",
+            "snapshot_parse_errors",
+            "snapshots",
+        ] {
             self.conn.execute(&format!("DELETE FROM {table} WHERE generation NOT IN (SELECT generation FROM snapshots ORDER BY generation DESC LIMIT 2)"), [])?;
         }
         Ok(())
@@ -94,7 +105,7 @@ impl Store {
             .transpose()?;
         if health
             .as_ref()
-            .is_none_or(|h| !h.scan_complete || h.files_failed > 0 || h.parse_error_files > 0)
+            .is_none_or(|h| !h.scan_complete || h.files_failed > 0)
         {
             return Err(Error::Invalid(
                 "snapshot comparison unavailable: current coverage is incomplete".into(),
@@ -130,18 +141,21 @@ impl Store {
                 SELECT COALESCE(n.identity,o.identity), COALESCE(n.file,o.file),
                     CASE WHEN o.identity IS NULL THEN 'relationship_added' WHEN n.identity IS NULL THEN 'relationship_removed' ELSE 'relationship_count_changed' END
                 FROM old_edges o FULL OUTER JOIN new_edges n ON o.identity=n.identity WHERE o.identity IS NULL OR n.identity IS NULL OR o.n!=n.n
-            ) SELECT identity,file,change FROM changes WHERE (?3 IS NULL OR file=?3)
+            ) SELECT identity,file,change,
+                EXISTS(SELECT 1 FROM snapshot_parse_errors p WHERE p.generation IN (?1,?2) AND p.file=changes.file)
+                FROM changes WHERE (?3 IS NULL OR file=?3)
                 AND (?4 IS NULL OR file=?4 OR substr(file,1,length(?4)+1)=?4||'/')
                 ORDER BY file,change,identity LIMIT ?5 OFFSET ?6";
         let mut statement = self.conn.prepare(sql)?;
         let rows: Vec<Value> = statement.query_map(params![baseline,current,query.file,query.subtree,(window.limit+1) as i64,window.offset as i64], |r| {
-            Ok(json!({"identity":r.get::<_, String>(0)?,"file":r.get::<_, String>(1)?,"change":r.get::<_, String>(2)?}))
+            Ok(json!({"identity":r.get::<_, String>(0)?,"file":r.get::<_, String>(1)?,"change":r.get::<_, String>(2)?,"partial_extraction":r.get::<_, bool>(3)?}))
         })?.collect::<rusqlite::Result<_>>()?;
         let mut value = serde_json::to_value(window.page(rows)?)?;
         value["baseline"] = json!(baseline);
         value["snapshot"] = json!(current);
-        value["evidence"] =
-            json!("AST content and heuristic call edges; ambiguous identities are not matched");
+        value["evidence"] = json!(
+            "AST content and heuristic call edges; ambiguous identities are not matched; partial_extraction marks files with syntax errors in either snapshot"
+        );
         Ok(value)
     }
 
@@ -249,14 +263,16 @@ impl Store {
         let rows_json = serde_json::to_string(&all)?;
         let sql = "WITH reached AS (SELECT json_extract(value,'$[0]') AS origin, json_extract(value,'$[1]') AS depth, json_extract(value,'$[2]') AS id FROM json_each(?1)),
             combined AS (
-                SELECT s.id,f.path,s.name,s.kind,s.start_line,s.end_line,s.parent,s.qualified,s.start_column,s.end_column,r.origin,r.depth
+                SELECT s.id,f.path,s.name,s.kind,s.start_line,s.end_line,s.parent,s.qualified,s.start_column,s.end_column,r.origin,r.depth,f.parse_errors AS partial
                     FROM reached r JOIN symbols s ON s.id=r.id JOIN files f ON f.id=s.file_id WHERE r.origin='current'
                 UNION ALL
-                SELECT s.symbol_id,s.file,s.name,s.kind,s.start_line,s.end_line,s.parent,s.qualified,s.start_column,s.end_column,r.origin,r.depth
+                SELECT s.symbol_id,s.file,s.name,s.kind,s.start_line,s.end_line,s.parent,s.qualified,s.start_column,s.end_column,r.origin,r.depth,
+                    EXISTS(SELECT 1 FROM snapshot_parse_errors p WHERE p.generation=?2 AND p.file=s.file)
                     FROM reached r JOIN snapshot_symbols s ON s.symbol_id=r.id AND s.generation=?2 WHERE r.origin='baseline'
             ) SELECT * FROM combined ORDER BY depth,path,start_line,origin,id LIMIT ?3 OFFSET ?4";
         let rows: Vec<Value> = self.conn.prepare(sql)?.query_map(params![rows_json,baseline,(window.limit+1) as i64,window.offset as i64],|r| Ok(json!({
-            "symbol":symbol_from_row(r)?,"origin":r.get::<_,String>(10)?,"depth":r.get::<_,u32>(11)?
+            "symbol":symbol_from_row(r)?,"origin":r.get::<_,String>(10)?,"depth":r.get::<_,u32>(11)?,
+            "partial_extraction":r.get::<_,bool>(12)?
         })))?.collect::<rusqlite::Result<_>>()?;
         let mut value = serde_json::to_value(window.page(rows)?)?;
         value["baseline"] = json!(baseline);
@@ -266,9 +282,7 @@ impl Store {
             .map(|s| serde_json::from_str(&s))
             .transpose()?;
         value["current_coverage_complete"] =
-            json!(health.is_some_and(|h| h.scan_complete
-                && h.files_failed == 0
-                && h.parse_error_files == 0));
+            json!(health.is_some_and(|h| h.scan_complete && h.files_failed == 0));
         value["baseline_available"] = json!(baseline.is_some());
         value["coverage"] =
             json!("structural changed ranges; old and new line coordinates may differ");

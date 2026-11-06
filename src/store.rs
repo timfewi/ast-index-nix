@@ -15,7 +15,7 @@ mod history;
 mod query;
 
 /// Schema version stored in `meta`.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Hash state of one file as recorded during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,7 +313,8 @@ impl Store {
                 PRIMARY KEY(generation,symbol_id));
             CREATE INDEX IF NOT EXISTS idx_snapshot_identity ON snapshot_symbols(generation,identity);
             CREATE TABLE IF NOT EXISTS snapshot_edges(generation INTEGER NOT NULL, caller INTEGER, callee INTEGER NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, reason TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS idx_snapshot_callers ON snapshot_edges(generation,callee);")?;
+            CREATE INDEX IF NOT EXISTS idx_snapshot_callers ON snapshot_edges(generation,callee);
+            CREATE TABLE IF NOT EXISTS snapshot_parse_errors(generation INTEGER NOT NULL, file TEXT NOT NULL, PRIMARY KEY(generation,file));")?;
         self.conn.execute_batch("CREATE TABLE IF NOT EXISTS semantic_inputs(file TEXT PRIMARY KEY, hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS semantic_documents(file TEXT PRIMARY KEY, hash TEXT NOT NULL, artifact TEXT NOT NULL, indexer TEXT NOT NULL, indexer_version TEXT NOT NULL, encoding INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS semantic_occurrences(id INTEGER PRIMARY KEY, file TEXT NOT NULL REFERENCES semantic_documents(file) ON DELETE CASCADE,
@@ -788,7 +789,7 @@ impl Store {
             "not_indexed"
         } else if health
             .as_ref()
-            .is_some_and(|h| !h.scan_complete || h.files_failed > 0 || h.parse_error_files > 0)
+            .is_some_and(|h| !h.scan_complete || h.files_failed > 0)
             || last_freshness_check.as_ref().is_some_and(|f| !f.complete)
         {
             "incomplete"
@@ -958,6 +959,16 @@ mod tests {
         assert_eq!(
             store.meta("schema_version").unwrap(),
             Some(SCHEMA_VERSION.to_string())
+        );
+        let parse_error_rows: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM snapshot_parse_errors", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            parse_error_rows, 0,
+            "migrated snapshots gain no syntax errors"
         );
         let state = store.file_state("lib.rs").unwrap().unwrap();
         assert_eq!(state.hash, "legacy-hash");

@@ -255,5 +255,9 @@ pub struct Freshness {
     #[serde(default)]
     pub version_changed: bool,
     pub examples: Vec<String>,
+    /// Every candidate was read; syntax errors do not reduce this coverage.
     pub complete: bool,
+    /// Indexed files whose extraction may be partial because of syntax errors.
+    #[serde(default)]
+    pub parse_error_files: usize,
 }

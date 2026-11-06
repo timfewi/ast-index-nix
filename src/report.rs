@@ -72,7 +72,7 @@ pub fn status_nice(status: &Status, now: i64) -> String {
         }
         if health.parse_error_files > 0 {
             out.push_str(&format!(
-                "                - {} files with syntax errors\n",
+                "                - {} files with syntax errors (read; extraction there may be partial)\n",
                 group(health.parse_error_files as i64)
             ));
         }
@@ -397,7 +397,7 @@ mod tests {
         let status: Status = serde_json::from_value(serde_json::json!({
             "root": "/r", "indexed": true, "last_indexed_at": 0, "files": 1200,
             "symbols": 3, "references": 4, "imports": 0, "resolved_references": 1,
-            "languages": [], "generation": 2, "freshness": "incomplete",
+            "languages": [], "generation": 2, "freshness": "unknown",
             "last_freshness_check": null, "parser_versions": {},
             "current_parser_versions": {}, "resolution_version": null,
             "current_resolution_version": "v", "resolution_reasons": {}, "reference_coverage": [],
@@ -412,9 +412,11 @@ mod tests {
         .unwrap();
         let text = status_nice(&status, 0);
         assert!(text.contains(
-            "State         incomplete: the last index run or check had incomplete results\n"
+            "State         no known problems; `ast-index freshness` checks current files\n"
         ));
-        assert!(text.contains("- 2 files with syntax errors\n"));
+        assert!(
+            text.contains("- 2 files with syntax errors (read; extraction there may be partial)\n")
+        );
         assert!(!text.contains("scan stopped early"));
         assert!(text.contains("Files         1,200\n"));
         assert!(text.contains("References    4\n"));

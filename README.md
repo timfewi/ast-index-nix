@@ -197,8 +197,10 @@ including same-size/same-mtime edits, and reports `fresh_at_check`, `stale` or
 `incomplete`. A past successful scan never makes a later status claim perpetual
 freshness. Indexing and freshness store derived metadata, never source edits.
 
-Failed directory scans retain absent old rows. Parse errors and retained failed
-files remain incomplete coverage. Parser/query changes invalidate cached
+Failed directory scans retain absent old rows. Retained failed files remain
+incomplete coverage. Syntax errors are per-file extraction diagnostics: the file
+was read and indexed as far as the grammar recovers, so `status` and `freshness`
+report `parse_error_files` without calling coverage incomplete. Parser/query changes invalidate cached
 extraction; resolver changes or project-boundary changes invalidate call edges.
 An unchanged pass reuses resolution. No watcher is required for correctness.
 
@@ -241,6 +243,8 @@ relationship changes, and flags duplicate comparison identities. `changes` also
 consults the retained baseline so deleted symbols remain visible. Supplied line
 ranges are applied to both snapshots; coordinates can differ after line shifts.
 Missing baselines, incomplete snapshots and unsupported ranges are reported.
+Each snapshot records its syntax-error files; `diff` and `changes` rows from such
+files carry `partial_extraction: true` instead of blocking the whole comparison.
 
 ## Optional precomputed SCIP data
 

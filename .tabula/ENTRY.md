@@ -26,7 +26,7 @@ freshness retains its recorded check. Semantic configuration drift is reported
 even when AST source bytes match.
 Exclusion-policy changes discard prior structural snapshots and require a complete
 scan; historical queries cannot return names from the earlier policy.
-Schema 9 persists
+Schema 10 records each structural snapshot's syntax-error files; schema 9 added
 zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
 reindexing. Manifest inputs include configuration/lock hashes. Rust generic-call
 wrappers/path trivia and JS/TS constructor expressions retain call positions.
@@ -52,7 +52,9 @@ same-named reference owners; ambiguous targets remain unresolved.
 Status reports link counts and unresolved reasons by language/reference kind;
 imports link to files, calls/dependencies to definitions, not an accuracy score.
 Freshness requires an explicit bounded byte
-scan. A successful old check does not prove present freshness. Semantic evidence
+scan. A successful old check does not prove present freshness. Coverage means
+every candidate was read; syntax errors are counted as `parse_error_files` and
+mark `diff`/`changes` rows `partial_extraction` instead of blocking them. Semantic evidence
 requires verified embedded source or a producer manifest. `evidence=combined`
 uses exact token identities and validated static declarations in refs/describe/
 callers/callees/impact; AST remains default and unchanged. Conflicts, trait dispatch,

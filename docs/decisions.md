@@ -260,3 +260,24 @@ The existing Tree-sitter 0.25 runtime is retained; grammar loading and query
 compilation are covered by the parser tests. Sequel requires `cc ~1.2.1`, so the
 lockfile selects `cc 1.2.67` instead of the prior `1.4.7`; this compatibility
 constraint is the reason for the older transitive build dependency.
+
+## D15 — Syntax errors are partial extraction, not missing coverage
+
+A Tree-sitter syntax error means one file was read but parts of its tree could
+not be extracted. Treating it as missing coverage made one error anywhere in a
+root block `freshness`, `diff` and `changes` for every other file. On the
+workspace root this happened permanently: 44 of 2875 files had errors, almost
+all valid code beyond the pinned grammars (for example a Rust variable named
+`raw` after `&`, `unsafe extern` blocks, a bare `&` in JSX text, `DO $$`
+blocks). Coverage now means that every candidate was read: a stopped walk or a
+failed read still makes status, freshness and snapshots incomplete. Status and
+freshness report `parse_error_files` separately. Each snapshot records its
+syntax-error files, and `diff`/`changes` rows from files with errors in either
+compared snapshot carry `partial_extraction: true`, so their added/removed
+symbols can be judged as possible recovery artifacts.
+
+Alternatives: excluding error files hides valid source and breaks again with the
+next unsupported construct; grammar updates reduce but cannot eliminate errors;
+dropping error files from comparisons would silently hide real changes.
+Snapshots saved before schema 10 keep their stored completeness and age out
+after two new snapshots.
