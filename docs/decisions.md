@@ -174,6 +174,18 @@ the result. Legacy manually supplied manifests retain listed-file validation
 for raw navigation; combined calls require a validated complete inventory.
 This does not execute a producer during a query or claim freshness after the read.
 
+Workspace AST state is not a semantic compiler project. Managed refresh therefore
+uses separate canonical-project/profile identities and an owner-supplied private
+runtime selection file, never repository discovery or project paths in Nix source.
+The single query tool gains explicit `project`/`profile` selectors rather than a
+second tool or automatic compiler execution. Missing/stale profiles fail visibly.
+Read-only readers open atomically published databases. A candidate copies prior
+state to retain generations, indexes/imports privately, finalizes its journal and
+replaces the published file only on success. This prevents failed producers from
+partially updating the serving database; the base-wide lock bounds concurrency.
+The optional timer is a separate producer process with a hard runtime limit;
+declaring it neither enrolls projects nor activates a host.
+
 The TypeScript adapter uses the already pinned native compiler's LSP rather than
 adding an npm installer or assuming the old JavaScript compiler API still exists.
 Version 7.0.2's `--lsp --stdio`, UTF-8 negotiation, initialization preferences and

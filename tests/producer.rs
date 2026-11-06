@@ -5,6 +5,8 @@ use std::fs;
 
 #[path = "producer/dependencies.rs"]
 mod dependencies;
+#[path = "producer/managed.rs"]
+mod managed;
 #[path = "producer/typescript.rs"]
 mod typescript;
 

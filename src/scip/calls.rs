@@ -42,6 +42,7 @@ pub(crate) fn fingerprint() -> String {
     hash.update(include_bytes!("calls.rs"));
     hash.update(include_bytes!("../producer.rs"));
     hash.update(include_bytes!("../producer/inputs.rs"));
+    hash.update(include_bytes!("../index.rs"));
     hash.update(include_bytes!("../producer/typescript.rs"));
     hash.update(include_bytes!("calls/typescript.rs"));
     for language in ["rust", "typescript", "tsx"] {

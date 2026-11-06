@@ -374,6 +374,39 @@ check their declared files. These checks are point-in-time observations.
 
 ## Resource limits and local state
 
+Managed semantic refresh keeps each canonical project and language profile in
+separate private state. Put only explicitly approved relative project selections
+in a private runtime file (mode `0600`), outside Git and the Nix store:
+
+```json
+{"version":1,"projects":[{"project":"example","profile":"rust","dependencies":false}]}
+```
+
+```bash
+ast-index-semantic refresh --root ./workspace --state-dir ./private-profiles --projects-file ./private-projects.json
+ast-index --root ./workspace --semantic-state-dir ./private-profiles --project example --profile rust callees caller --evidence combined --json
+```
+
+The state base must be separate from each selected project. At most eight
+project/profile pairs are accepted; paths, symlinks, duplicates and the complete
+plan are validated before producer work. New work stops starting after five
+minutes; each producer retains its own stage limits. Unchanged, fully validated
+inputs skip the compiler. Changed inputs build a disposable candidate, retain
+monotonic generations and atomically replace the database only after validation.
+Failed refreshes leave the previous snapshot intact; stale evidence still cannot
+answer combined queries. Published databases are opened read-only. A base-wide
+lock prevents concurrent refreshes. State directories/files use `0700`/`0600`.
+Runtime reports contain entry numbers/profile/status, not project paths or source
+diagnostics. Hash-based directory names are private metadata, not anonymization.
+
+Configure `--semantic-state-dir` on the CLI, stdio server or socket server.
+MCP queries supply both `project` and `profile`; file paths then refer to that
+project. Missing profiles return an error without creating state or running a
+producer. Other queries continue to use the ordinary workspace AST index.
+Managed `freshness` is also read-only: it adds `semantic_current` to the usual
+AST comparison and reports stale when configuration/profile inputs no longer
+match, even with zero changed AST files. It does not persist a check timestamp.
+
 Normal indexing caps source files at 2 MiB each, scans at 100,000 source files and
 256 MiB, and stored symbols/references at 200,000/500,000. Traversal errors or scan
 caps produce incomplete coverage; storage caps abort the update. Graph work is
@@ -400,6 +433,7 @@ OS identities/sandboxes and directory permissions. Socket paths and their
 listener locks are independent of database state: use distinct sockets for
 independent instances. A socket proxy uses only its server's state; passing
 `--state-dir` to `mcp --socket` is rejected instead of silently ignored.
+The same applies to `--semantic-state-dir`: configure the server, not its proxy.
 
 ## NixOS service
 
@@ -439,6 +473,17 @@ Harnesses then run `ast-index mcp --socket /run/ast-index/socket`. Each mutation
 holds the database writer lock; socket ownership is separate. The
 socket is created with mode `0600` inside a `0750` runtime directory, so only the
 service user can connect.
+
+To opt in to the bounded offline runner, set
+`services.astIndex.semantic.enable = true` and
+`services.astIndex.semantic.projectsFile = "/var/lib/ast-index/private-projects.json"`
+alongside a dedicated `stateDir`. The owner supplies that private runtime file;
+Nix never embeds its contents. The runner skips an absent file, runs at most one
+batch at a time, starts three minutes after boot and waits five minutes after
+each completion (configurable, minimum one minute). The unit has a ten-minute
+timeout, private network/tmp, read-only source and private writable semantic
+state. Hosts supply resource ceilings and filesystem restrictions. Configuration
+evaluation and local runner tests do not establish that a host unit is activated.
 
 ## Development
 

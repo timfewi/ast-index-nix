@@ -1671,6 +1671,244 @@ fn mcp_json_args(root: &Path, args: &[&str], arguments: Value) -> Value {
 }
 
 #[test]
+fn managed_profiles_have_cli_stdio_socket_parity_and_keep_query_errors() {
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let project = workspace.join("example");
+    let base = temporary.path().join("profiles");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true},"include":["main.ts"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("main.ts"),
+        "export function target() {}\nexport function caller() {target(); target();}\n",
+    )
+    .unwrap();
+    let selection = ast_index::profiles::Selection {
+        project: "example".into(),
+        profile: ast_index::producer::Profile::TypeScript,
+        dependencies: false,
+    };
+    ast_index::profiles::refresh(&workspace, &base, &selection, &[]).unwrap();
+    let socket = temporary.path().join("service.sock");
+    let mut service = Service(
+        Command::new(binary())
+            .arg("--root")
+            .arg(&workspace)
+            .arg("--semantic-state-dir")
+            .arg(&base)
+            .args(["serve", "--socket"])
+            .arg(&socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(service.0.try_wait().unwrap().is_none(), "service exited");
+        assert!(
+            Instant::now() < deadline,
+            "service did not create its socket"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for (action, symbol) in [
+        ("callees", "caller"),
+        ("callers", "target"),
+        ("describe", "target"),
+        ("impact", "target"),
+    ] {
+        let cli = raw_json(
+            &workspace,
+            &[
+                "--semantic-state-dir",
+                base.to_str().unwrap(),
+                "--project",
+                "example",
+                "--profile",
+                "typescript",
+                action,
+                symbol,
+                "--evidence",
+                "combined",
+                "--json",
+            ],
+        );
+        let arguments = serde_json::json!({"action":action,"query":symbol,"project":"example","profile":"typescript","evidence":"combined","format":"json"});
+        let stdio = mcp_json_args(
+            &workspace,
+            &["--semantic-state-dir", base.to_str().unwrap()],
+            arguments.clone(),
+        );
+        let proxy = mcp_json_args(
+            &workspace,
+            &["--socket", socket.to_str().unwrap()],
+            arguments,
+        );
+        assert_eq!(cli, stdio);
+        assert_eq!(cli, proxy);
+    }
+    let fresh = raw_json(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "freshness",
+            "--json",
+        ],
+    );
+    assert_eq!(fresh["state"], "fresh_at_check");
+    assert_eq!(fresh["semantic_current"], true);
+    let checked = mcp_json_args(
+        &workspace,
+        &["--socket", socket.to_str().unwrap()],
+        serde_json::json!({"action":"freshness","project":"example","profile":"typescript","format":"json"}),
+    );
+    assert_eq!(checked["state"], "fresh_at_check");
+    assert_eq!(checked["semantic_current"], true);
+    let status = raw_json(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "status",
+            "--json",
+        ],
+    );
+    assert!(
+        status["last_freshness_check"].is_null(),
+        "managed freshness must not persist metadata"
+    );
+    let page = raw_json(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "refs",
+            "--kind",
+            "call",
+            "--limit",
+            "1",
+            "--evidence",
+            "combined",
+            "--json",
+        ],
+    );
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let next = raw_json(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "refs",
+            "--kind",
+            "call",
+            "--limit",
+            "1",
+            "--evidence",
+            "combined",
+            "--cursor",
+            cursor,
+            "--json",
+        ],
+    );
+    assert_ne!(page["items"][0]["id"], next["items"][0]["id"]);
+    // Configuration changes count even if every AST source is unchanged.
+    std::fs::write(
+        project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":false},"include":["main.ts"]}"#,
+    )
+    .unwrap();
+    let configuration = raw_json(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "freshness",
+            "--json",
+        ],
+    );
+    assert_eq!(configuration["state"], "stale");
+    assert_eq!(configuration["semantic_current"], false);
+    assert_eq!(configuration["changed_files"], 0);
+    // Source errors propagate through the same RPC contract without fallback.
+    std::fs::write(project.join("added.ts"), "export {};\n").unwrap();
+    let stale = run_cli(
+        &workspace,
+        &[
+            "--semantic-state-dir",
+            base.to_str().unwrap(),
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "callees",
+            "caller",
+            "--evidence",
+            "combined",
+            "--json",
+        ],
+    );
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("stale"));
+    let engine = ast_index::Engine::open(&workspace, None)
+        .unwrap()
+        .with_semantic_state_dir(base.clone(), Vec::new());
+    let server = ast_index::RpcServer::new(engine);
+    let response = server.handle(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code_explore","arguments":{"action":"callees","query":"caller","project":"example","profile":"typescript","evidence":"combined","format":"json"}}}));
+    assert_eq!(response["result"]["isError"], true);
+    assert!(response.to_string().contains("stale"));
+    for args in [
+        vec!["--project", "example", "--profile", "typescript", "index"],
+        vec!["--project", "example", "status"],
+        vec!["--profile", "typescript", "status"],
+        vec![
+            "--project",
+            "example",
+            "--profile",
+            "typescript",
+            "mcp",
+            "--socket",
+            socket.to_str().unwrap(),
+        ],
+    ] {
+        assert!(!run_cli(&workspace, &args).status.success());
+    }
+}
+
+#[test]
 fn selectors_pagination_and_frontend_contracts() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

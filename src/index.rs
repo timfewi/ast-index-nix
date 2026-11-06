@@ -34,6 +34,9 @@ pub struct IndexOptions {
     /// gitignore-style patterns excluded from the walk, relative to the root.
     /// A pattern without a leading slash matches at any depth.
     pub exclude: Vec<String>,
+    /// Project path relative to the exclusion policy's workspace; no extra walk.
+    #[serde(default)]
+    pub exclude_prefix: String,
     pub max_files: usize,
     pub max_total_bytes: u64,
 }
@@ -45,6 +48,7 @@ impl Default for IndexOptions {
             max_file_bytes: 2 * 1024 * 1024,
             max_failures: 16,
             exclude: Vec::new(),
+            exclude_prefix: String::new(),
             max_files: 100_000,
             max_total_bytes: 256 * 1024 * 1024,
         }
@@ -224,15 +228,25 @@ fn record_failure(stats: &mut IndexStats, options: &IndexOptions, message: Strin
     }
 }
 
-fn collect_candidates(
+pub(crate) fn exclusions(
     root: &Path,
-    store: &Store,
-    options: &IndexOptions,
-    stats: &mut IndexStats,
-) -> Result<(Vec<Candidate>, u64)> {
+    patterns: &[String],
+    prefix: &str,
+) -> Result<ignore::overrides::Override> {
+    let prefix = crate::query::relative_path(prefix)?;
+    let depth = Path::new(&prefix).components().count();
+    if !root.ends_with(&prefix) && !prefix.is_empty() {
+        return Err(Error::Invalid(
+            "exclusion scope does not match the project".into(),
+        ));
+    }
+    let anchor = root
+        .ancestors()
+        .nth(depth)
+        .ok_or_else(|| Error::Invalid("invalid exclusion scope".into()))?;
     // Exclusions are gitignore-style ignore patterns; everything else is walked.
-    let mut overrides = OverrideBuilder::new(root);
-    for pattern in &options.exclude {
+    let mut overrides = OverrideBuilder::new(anchor);
+    for pattern in patterns {
         let trimmed = pattern.trim();
         if trimmed.is_empty() {
             continue;
@@ -244,6 +258,26 @@ fn collect_candidates(
     let overrides = overrides
         .build()
         .map_err(|error| Error::Invalid(format!("invalid exclude patterns: {error}")))?;
+    if depth > 0
+        && root
+            .ancestors()
+            .take(depth)
+            .any(|path| overrides.matched(path, true).is_ignore())
+    {
+        return Err(Error::Invalid(
+            "selected project is excluded by the workspace policy".into(),
+        ));
+    }
+    Ok(overrides)
+}
+
+fn collect_candidates(
+    root: &Path,
+    store: &Store,
+    options: &IndexOptions,
+    stats: &mut IndexStats,
+) -> Result<(Vec<Candidate>, u64)> {
+    let overrides = exclusions(root, &options.exclude, &options.exclude_prefix)?;
 
     let state_dir = store.state_dir().map(Path::to_path_buf);
     let walker = WalkBuilder::new(root)
@@ -619,6 +653,13 @@ fn open_source(root: &Path, path: &Path) -> Result<std::fs::File> {
 /// Check current bytes without changing indexed content or trusting timestamps.
 pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> {
     let _writer = store.write_lock()?;
+    let result = check_freshness(root, store)?;
+    store.set_meta("last_freshness_check", &serde_json::to_string(&result)?)?;
+    Ok(result)
+}
+
+/// Compare a stable published snapshot without recording a result in its DB.
+pub(crate) fn check_freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> {
     let root = root.canonicalize().map_err(|e| Error::io(root, e))?;
     store.require_root(&root)?;
     let options: IndexOptions = store
@@ -714,7 +755,6 @@ pub fn freshness(root: &Path, store: &Store) -> Result<crate::model::Freshness> 
         examples,
         complete: stats.scan_complete,
     };
-    store.set_meta("last_freshness_check", &serde_json::to_string(&result)?)?;
     Ok(result)
 }
 

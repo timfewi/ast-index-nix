@@ -68,7 +68,10 @@ fn rust_uses_only_explicit_vendored_inputs_without_running_dependency_build_scri
         .unwrap_err()
         .to_string();
     assert!(error.contains("offline Cargo metadata failed"), "{error}");
-    let enabled = Options { dependencies: true };
+    let enabled = Options {
+        dependencies: true,
+        ..Default::default()
+    };
     producer::rust(&root, &state, &enabled).unwrap();
     assert!(
         !root.join(".cargo").exists(),
@@ -136,7 +139,10 @@ fn typescript_loads_explicit_dependency_types_and_invalidates_changed_or_added_i
         .unwrap_err()
         .to_string();
     assert!(error.contains("offline TypeScript check failed"), "{error}");
-    let enabled = Options { dependencies: true };
+    let enabled = Options {
+        dependencies: true,
+        ..Default::default()
+    };
     let stats = producer::typescript(&root, &state, &enabled).unwrap();
     assert_eq!(stats.documents, 1, "dependency definitions remain external");
     let engine = Engine::open_state_dir(&root, &state).unwrap();

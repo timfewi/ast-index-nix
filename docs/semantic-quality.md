@@ -3,8 +3,8 @@
 Exact positions, independent Rust/TypeScript corpora, explicit offline Rust and
 TypeScript producers and validated call overlays are implemented. Both profiles
 pass their frozen synthetic corpora. Explicit project-local dependency input and
-complete input-inventory freshness are implemented; per-project/profile refresh
-and host integration remain open. This does not
+complete input-inventory freshness, managed per-project/profile refresh and the
+opt-in NixOS runner are implemented; consumer/host rollout remains open. This does not
 establish the target on arbitrary projects, other languages or the full plan.
 Keep the existing offline AST engine; add locally produced semantic evidence
 through an explicit adapter. Do not train a model, upload source, or copy a
@@ -112,7 +112,9 @@ does not establish the same recall on arbitrary projects or languages.
   detecting new files as well as changed/deleted inputs. Legacy listed-file
   manifests keep their original freshness scope and cannot enable combined
   call edges. This
-  is not yet an incremental semantic service for an entire multi-repo workspace.
+  does not make a workspace root into one compiler project. Managed refresh
+  stores each explicitly selected project/profile separately and skips unchanged
+  validated inputs; changed profiles are regenerated as bounded snapshots.
 - A local synthetic Rust smoke using rust-analyzer 2026-09-21 produced SCIP for
   `value.tick()` where `value: &Counter`. AST resolution abstained; SCIP attached
   the same symbol identity to the method token and its definition. The importer
@@ -213,6 +215,21 @@ unsupported. The dependency tests establish this data path and its bounds, not
 a new recall percentage or arbitrary dependency/runtime compatibility.
 
 ## Implementation order and exit criteria
+
+Managed refresh acceptance is in [the producer tests](../tests/producer/managed.rs)
+and [transport tests](../tests/integration.rs). Two profiles in one project and a
+second project remain separate. Fresh inputs skip absent compiler executables;
+changed settings that cannot run leave published state untouched. Changed source
+is rejected until a validated candidate atomically replaces the snapshot, with
+increasing generations. CLI, stdio and socket queries agree. Private runtime plan
+validation rejects traversal, symlinks, duplicates, unknown fields/profiles and
+public permissions before starting work. Module evaluation checks the opt-in
+runner/timer, runtime-file binding, privacy settings and service arguments.
+These tests do not prove live systemd enforcement or arbitrary-project accuracy.
+Managed `freshness` compares AST and semantic input validity without writing the
+published database. A failing-before/fixed-after transport regression caught the
+ordinary freshness command's attempted metadata write; configuration-only changes
+now report stale with `semantic_current=false` even when AST files are unchanged.
 
 1. **Public synthetic corpus and evaluator.** Author small standalone projects
    with neutral names and no user-derived code. Store expected source/target

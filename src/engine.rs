@@ -18,6 +18,8 @@ pub const DB_FILE: &str = "index.sqlite";
 pub struct Engine {
     store: Store,
     root: PathBuf,
+    semantic_state_dir: Option<PathBuf>,
+    semantic_exclude: Vec<String>,
 }
 
 impl Engine {
@@ -35,7 +37,12 @@ impl Engine {
         let db = db.unwrap_or_else(|| default_db_path(&root));
         let store = Store::open(db)?;
         store.require_root(&root)?;
-        Ok(Self { store, root })
+        Ok(Self {
+            store,
+            root,
+            semantic_state_dir: None,
+            semantic_exclude: Vec::new(),
+        })
     }
 
     /// Open independent derived state for `root` in a dedicated directory.
@@ -44,11 +51,46 @@ impl Engine {
         let root = root.canonicalize().map_err(|e| Error::io(&root, e))?;
         let store = Store::open_state_dir(state_dir)?;
         store.require_root(&root)?;
-        Ok(Self { store, root })
+        Ok(Self {
+            store,
+            root,
+            semantic_state_dir: None,
+            semantic_exclude: Vec::new(),
+        })
+    }
+
+    pub(crate) fn open_existing_state_dir(root: PathBuf, state: &Path) -> Result<Self> {
+        let store = Store::open_existing_state_dir(state)?;
+        store.require_root(&root)?;
+        Ok(Self {
+            store,
+            root,
+            semantic_state_dir: None,
+            semantic_exclude: Vec::new(),
+        })
+    }
+
+    /// Allow explicit project/profile queries against already published state.
+    /// This does not create an index or invoke a semantic producer.
+    pub fn with_semantic_state_dir(mut self, directory: PathBuf, exclude: Vec<String>) -> Self {
+        self.semantic_state_dir = Some(directory);
+        self.semantic_exclude = exclude;
+        self
     }
 
     /// Execute one bounded query against a consistent database snapshot.
     pub fn execute(&self, query: &crate::query::Query) -> Result<serde_json::Value> {
+        query.validate()?;
+        if query.project.is_some() {
+            let state = self.semantic_state_dir.as_deref().ok_or_else(|| Error::Invalid(
+                "managed semantic profiles are disabled; configure --semantic-state-dir on the query service".into()
+            ))?;
+            return crate::profiles::query(&self.root, state, &self.semantic_exclude, query);
+        }
+        self.execute_local(query)
+    }
+
+    pub(crate) fn execute_local(&self, query: &crate::query::Query) -> Result<serde_json::Value> {
         query.validate()?;
         let mut normalized = query.clone();
         normalized.file = query

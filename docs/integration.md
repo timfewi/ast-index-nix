@@ -110,3 +110,12 @@ runner profile no longer matches. Unconfirmed calls within its input profile
 remain `semantic_unverified`, including cfg-disabled or unloaded source; they
 cannot fall back to an AST target. `freshness` explicitly
 checks current bytes; ordinary status reports a snapshot, not perpetual freshness.
+
+For a shared workspace service, configure `--semantic-state-dir` on `serve` (the
+NixOS semantic option does this). An explicit private runtime refresh plan prepares
+the project/profile state. Queries then supply, for example,
+`{"action":"callees","query":"caller","project":"example","profile":"rust","evidence":"combined"}`.
+Both selectors are required; returned/file-selector paths are relative to that
+project. A socket proxy does not change roots when its working directory changes.
+Missing or stale profiles report a gap; queries never launch a compiler. The
+ordinary workspace AST index remains available without these selectors.

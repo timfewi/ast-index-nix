@@ -30,6 +30,12 @@ struct Cli {
         conflicts_with = "db"
     )]
     state_dir: Option<PathBuf>,
+    /// Private base of explicitly refreshed project/profile indices.
+    #[arg(long, global = true, env = "AST_INDEX_SEMANTIC_STATE_DIR")]
+    semantic_state_dir: Option<PathBuf>,
+    /// Workspace exclusion policy used by managed semantic refresh.
+    #[arg(long, global = true, requires = "semantic_state_dir")]
+    semantic_exclude: Vec<String>,
     #[command(flatten)]
     options: QueryOptions,
     #[command(subcommand)]
@@ -66,6 +72,11 @@ struct QueryOptions {
     /// Opt in to validated semantic calls; the AST-only view remains available.
     #[arg(long, global = true, value_parser = ["ast", "combined"])]
     evidence: Option<String>,
+    /// Select an already refreshed project, relative to --root (use . for root).
+    #[arg(long, global = true, requires = "profile")]
+    project: Option<String>,
+    #[arg(long, global = true, value_parser = ["rust", "typescript"], requires = "project")]
+    profile: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,13 +196,26 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> ast_index::Result<()> {
+    if cli.options.project.is_some()
+        && matches!(
+            cli.command,
+            Command::Index { .. }
+                | Command::ImportScip { .. }
+                | Command::Serve { .. }
+                | Command::Mcp { .. }
+        )
+    {
+        return Err(Error::Invalid(
+            "project/profile select a query, not a mutation or server default".into(),
+        ));
+    }
     if let Command::Mcp {
         socket: Some(socket),
     } = &cli.command
     {
-        if cli.state_dir.is_some() {
+        if cli.state_dir.is_some() || cli.semantic_state_dir.is_some() {
             return Err(Error::Invalid(
-                "--state-dir selects local state; configure it on serve, not the socket proxy"
+                "--state-dir/--semantic-state-dir selects local state; configure it on serve, not the socket proxy"
                     .into(),
             ));
         }
@@ -203,6 +227,10 @@ fn run(cli: Cli) -> ast_index::Result<()> {
     let engine = match cli.state_dir {
         Some(state_dir) => Engine::open_state_dir(root, state_dir)?,
         None => Engine::open(root, cli.db)?,
+    };
+    let engine = match cli.semantic_state_dir {
+        Some(directory) => engine.with_semantic_state_dir(directory, cli.semantic_exclude),
+        None => engine,
     };
     match cli.command {
         Command::ImportScip { artifact, manifest } => {
@@ -264,6 +292,11 @@ fn run(cli: Cli) -> ast_index::Result<()> {
                 match_mode: o.match_mode,
                 reason: o.reason,
                 evidence: o.evidence,
+                project: o.project,
+                profile: o
+                    .profile
+                    .map(|s| serde_json::from_value(serde_json::Value::String(s)))
+                    .transpose()?,
                 ..Query::default()
             };
             let mut nice = false;

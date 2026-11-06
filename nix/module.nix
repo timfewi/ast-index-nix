@@ -18,6 +18,7 @@ let
   inherit (cfg) package;
   socketDirectory = builtins.dirOf cfg.socket;
   stateDirectory = lib.removePrefix "/var/lib/" (toString cfg.stateDir);
+  semanticState = "${toString cfg.stateDir}/semantic";
   indexArgs = lib.optionals cfg.indexOnStart (
     [ "--index" ]
     ++ lib.concatMap (pattern: [
@@ -99,13 +100,53 @@ in
       description = ''
         gitignore-style path patterns excluded from the index, relative to
         {option}`root`. A pattern without a leading slash matches at any depth.
-        Only used when {option}`indexOnStart` is enabled.
+        Used for startup indexing when {option}`indexOnStart` is enabled, and
+        always for enabled semantic snapshots, refreshes and query admission.
       '';
+    };
+
+    semantic = {
+      enable = lib.mkEnableOption "explicit private project/profile semantic refresh";
+      projectsFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "/.+");
+        default = null;
+        example = "/var/lib/ast-index/projects.json";
+        description = ''
+          Owner-maintained private runtime JSON file (mode 0600), never store
+          content: {"version":1,"projects":[{"project":"relative/project",
+          "profile":"rust","dependencies":false}]}. At most eight selections.
+          No projects are discovered or enrolled automatically. Missing file
+          skips the runner; a missing or stale profile never runs a compiler
+          during a query. Dependencies must already be staged locally.
+        '';
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.semantic-runner;
+        defaultText = lib.literalExpression "self.packages.\${system}.semantic-runner";
+        description = "Pinned offline Rust/TypeScript producer closure.";
+      };
+      intervalSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 300;
+        description = "Delay after a completed refresh, at least 60 seconds. Fresh inputs skip the compiler.";
+      };
     };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion =
+          !cfg.semantic.enable
+          || (
+            cfg.stateDir != null
+            && cfg.semantic.projectsFile != null
+            && !(lib.hasPrefix "/nix/store/" (toString cfg.semantic.projectsFile))
+            && cfg.semantic.intervalSeconds >= 60
+          );
+        message = "services.astIndex.semantic needs a dedicated stateDir, non-store runtime projectsFile and intervalSeconds >= 60.";
+      }
       {
         assertion =
           cfg.stateDir == null
@@ -119,50 +160,112 @@ in
 
     environment.systemPackages = [ package ];
 
-    systemd.services.ast-index = {
-      description = "ast-index AST code index service";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
-      serviceConfig = {
-        Type = "simple";
-        User = cfg.user;
-        ExecStart = utils.escapeSystemdExecArgs (
-          [
-            "${package}/bin/ast-index"
-            "--root"
-            cfg.root
-          ]
-          ++ lib.optionals (cfg.stateDir != null) [
-            "--state-dir"
-            cfg.stateDir
-          ]
-          ++ [
-            "serve"
-            "--socket"
-            cfg.socket
-          ]
-          ++ indexArgs
-        );
-        RuntimeDirectory = "ast-index";
-        RuntimeDirectoryMode = "0750";
-        UMask = "0007";
-        Restart = "on-failure";
-        RestartSec = 2;
-        # Hardening that does not break file access to the indexed root.
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = "read-only";
-        ReadWritePaths = [
-          (if cfg.stateDir == null then cfg.root else cfg.stateDir)
-          "${socketDirectory}"
-        ];
-        RestrictAddressFamilies = [ "AF_UNIX" ];
-      }
-      // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; }
-      // lib.optionalAttrs (cfg.stateDir != null) {
-        StateDirectory = stateDirectory;
-        StateDirectoryMode = "0700";
+    systemd = {
+      services = {
+        ast-index = {
+          description = "ast-index AST code index service";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network.target" ];
+          serviceConfig = {
+            Type = "simple";
+            User = cfg.user;
+            ExecStart = utils.escapeSystemdExecArgs (
+              [
+                "${package}/bin/ast-index"
+                "--root"
+                cfg.root
+              ]
+              ++ lib.optionals (cfg.stateDir != null) [
+                "--state-dir"
+                cfg.stateDir
+              ]
+              ++ lib.optionals cfg.semantic.enable (
+                [
+                  "--semantic-state-dir"
+                  semanticState
+                ]
+                ++ lib.concatMap (pattern: [
+                  "--semantic-exclude"
+                  pattern
+                ]) cfg.exclude
+              )
+              ++ [
+                "serve"
+                "--socket"
+                cfg.socket
+              ]
+              ++ indexArgs
+            );
+            RuntimeDirectory = "ast-index";
+            RuntimeDirectoryMode = "0750";
+            UMask = "0007";
+            Restart = "on-failure";
+            RestartSec = 2;
+            # Hardening that does not break file access to the indexed root.
+            NoNewPrivileges = true;
+            PrivateTmp = true;
+            ProtectSystem = "strict";
+            ProtectHome = "read-only";
+            ReadWritePaths = [
+              (if cfg.stateDir == null then cfg.root else cfg.stateDir)
+              "${socketDirectory}"
+            ];
+            RestrictAddressFamilies = [ "AF_UNIX" ];
+          }
+          // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; }
+          // lib.optionalAttrs (cfg.stateDir != null) {
+            StateDirectory = stateDirectory;
+            StateDirectoryMode = "0700";
+          };
+        };
+
+        ast-index-semantic-refresh = lib.mkIf cfg.semantic.enable {
+          description = "Refresh explicitly selected private ast-index semantic profiles";
+          unitConfig = {
+            ConditionPathExists = cfg.semantic.projectsFile;
+            ConditionPathIsDirectory = cfg.root;
+          };
+          serviceConfig = {
+            Type = "oneshot";
+            User = cfg.user;
+            UMask = "0077";
+            TimeoutStartSec = 600;
+            ExecStart = utils.escapeSystemdExecArgs (
+              [
+                "${cfg.semantic.package}/bin/ast-index-semantic"
+                "refresh"
+                "--root"
+                cfg.root
+                "--state-dir"
+                semanticState
+                "--projects-file"
+                cfg.semantic.projectsFile
+              ]
+              ++ lib.concatMap (pattern: [
+                "--exclude"
+                pattern
+              ]) cfg.exclude
+            );
+            StateDirectory = "${stateDirectory}/semantic";
+            StateDirectoryMode = "0700";
+            NoNewPrivileges = true;
+            PrivateTmp = true;
+            PrivateNetwork = true;
+            ProtectSystem = "strict";
+            ProtectHome = "read-only";
+            ReadWritePaths = [ semanticState ];
+            RestrictAddressFamilies = [ "AF_UNIX" ];
+          }
+          // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; };
+        };
+      };
+      timers.ast-index-semantic-refresh = lib.mkIf cfg.semantic.enable {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "3min";
+          OnUnitInactiveSec = "${toString cfg.semantic.intervalSeconds}s";
+          AccuracySec = "10s";
+        };
       };
     };
   };

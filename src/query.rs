@@ -49,6 +49,9 @@ pub struct Query {
     pub relation: Option<String>,
     /// AST remains the default. Combined queries require fresh semantic evidence.
     pub evidence: Option<String>,
+    /// Explicit workspace-relative project and managed semantic profile.
+    pub project: Option<String>,
+    pub profile: Option<crate::producer::Profile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +103,17 @@ impl Query {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.project.is_some() != self.profile.is_some() {
+            return Err(Error::Invalid(
+                "project and profile must be supplied together".into(),
+            ));
+        }
+        if let Some(project) = &self.project {
+            relative_path(project)?;
+            if project.is_empty() || project.chars().any(char::is_control) {
+                return Err(Error::Invalid("invalid project selection".into()));
+            }
+        }
         if !ACTIONS.contains(&self.action.as_str()) {
             return Err(Error::Invalid("unsupported action".into()));
         }

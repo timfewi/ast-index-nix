@@ -13,11 +13,18 @@ CLI, stdio MCP or Unix-socket frontends. No project execution or runtime network
 - [src/scip.rs](../src/scip.rs), [src/scip/wire.rs](../src/scip/wire.rs), [src/scip/calls.rs](../src/scip/calls.rs), [src/scip/calls/typescript.rs](../src/scip/calls/typescript.rs): local SCIP import, source verification and independent Rust/TypeScript static-call overlays.
 - [src/producer.rs](../src/producer.rs), [src/producer/inputs.rs](../src/producer/inputs.rs), [src/producer/typescript.rs](../src/producer/typescript.rs), [src/bin/ast-index-semantic.rs](../src/bin/ast-index-semantic.rs), [flake.nix](../flake.nix): explicit private snapshots, shared bounded input inventories, opt-in regular vendor/node_modules trees, offline tool closures, patched Rust SCIP and native TypeScript LSP; no producer invocation from queries.
 - [src/main.rs](../src/main.rs), [src/rpc.rs](../src/rpc.rs), [src/serve.rs](../src/serve.rs): CLI, single-tool MCP and socket/proxy adapters.
+- [src/profiles.rs](../src/profiles.rs), [nix/module.nix](../nix/module.nix): private runtime selections, separate project/profile identities, unchanged-input skips, atomic candidate publication and optional bounded refresh timer. Queries open published state read-only and never invoke producers.
 
 ## Interfaces and limits
 `code_explore` actions: status, freshness, search, outline, describe, callers,
 callees, impact, refs, imports, importers, deps, map, changes, diff, semantic.
-CLI also owns explicit `index` and `import-scip` mutations. Schema 9 persists
+CLI also owns explicit `index` and `import-scip` mutations. Managed queries select
+both workspace-relative `project` and `profile` with a configured semantic state
+base; paths then refer to that project. Missing/stale profiles fail visibly.
+Managed freshness is read-only and includes `semantic_current`; ordinary workspace
+freshness retains its recorded check. Semantic configuration drift is reported
+even when AST source bytes match.
+Schema 9 persists
 zero-based half-open UTF-8 reference ranges; legacy ranges stay null until
 reindexing. Manifest inputs include configuration/lock hashes. Rust generic-call
 wrappers/path trivia and JS/TS constructor expressions retain call positions.
@@ -57,11 +64,12 @@ no freshness guarantee persists
 after a query returns.
 
 ## Change and verify
-- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust/TypeScript/dependency acceptance and remaining per-project/profile refresh and host integration work.
+- [docs/semantic-quality.md](../docs/semantic-quality.md): scoped Rust/TypeScript/dependency/managed-refresh acceptance; consumer/host rollout remains separate.
 - [Oracle](../tests/quality.rs)/[scorer](../tests/quality/evaluator.rs)/[acceptance](../tests/quality/acceptance.rs)/[Rust calls](../tests/quality/fixtures/rust/src/lib.rs)/[targets](../tests/quality/fixtures/rust/src/ops.rs)/[TypeScript calls](../tests/quality/fixtures/typescript/src/main.ts)/[targets](../tests/quality/fixtures/typescript/src/ops.ts): independent labels; Rust combined passes 101/101 with no wrong targets and two abstentions; TypeScript passes 100/100 with three abstentions. Neither is an arbitrary-project guarantee.
 - [Producer smoke](../tests/producer.rs)/[TypeScript safety](../tests/producer/typescript.rs)/[dependency acceptance](../tests/producer/dependencies.rs): real offline Rust/TypeScript import, project/dependency build-script canaries, temporary cleanup, UTF-8/CRLF, TSX, lockfile and complete-inventory invalidation. Isolated mutation/escape/decorator/constructor cases abstain. External caches and symlinked dependency layouts remain unsupported.
 - [docs/requirements.md](../docs/requirements.md): scope and evidence.
 - [docs/architecture.md](../docs/architecture.md), [docs/decisions.md](../docs/decisions.md): contracts and rationale.
 - [docs/development.md](../docs/development.md): current checkpoint and workflow.
 - [tests/integration.rs](../tests/integration.rs): CLI/MCP/socket behavior and failure regressions; parser, resolver, SCIP and query plans also have unit tests.
+- [tests/producer/managed.rs](../tests/producer/managed.rs), [tests/nix/module-eval.nix](../tests/nix/module-eval.nix): separate project/profile state, fresh skip without compiler, failed-refresh preservation, changed-source replacement, plan validation and opt-in unit configuration. No live host activation is asserted.
 - Fast gate: `nix develop --command bash scripts/check fast`. No host activation, package builds or external publication is implied.

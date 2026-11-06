@@ -54,6 +54,12 @@ Versioned input inventories detect additions as well as changed/deleted sources,
 configuration and dependency files. The formerly missed added-source case has a
 failing-before/fixed-after regression; dependency inputs share all snapshot caps.
 
+Managed refresh uses a private versioned project selection file and separate
+project/profile databases. Real producer tests exercise multiple profiles/projects,
+unchanged input skips, failed-refresh preservation and changed-source replacement.
+CLI/stdio/socket tests cover explicit routing and stale-query rejection. Host
+module evaluation covers the opt-in timer; live host activation remains separate.
+
 Pre-publication review reproduced and fixed generic Go receiver parameters
 falling back to package functions, wrapped Lua table/loader aliases retaining
 static targets, and status counts omitting resolved SQL dependencies. Each

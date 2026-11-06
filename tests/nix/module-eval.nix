@@ -34,6 +34,17 @@ let
     group = "root";
   };
   isolatedService = isolated.systemd.services.ast-index.serviceConfig;
+  semantic = mkConfig {
+    stateDir = "/var/lib/ast-index/instance-a";
+    semantic.enable = true;
+    semantic.projectsFile = "/var/lib/ast-index/private-projects.json";
+    exclude = [
+      "/private/"
+      "secrets/"
+    ];
+  };
+  semanticRunner = semantic.systemd.services.ast-index-semantic-refresh;
+  invalidSemantic = mkConfig { semantic.enable = true; };
   invalid = mkConfig { stateDir = "/var/lib/../shared"; };
   escaped = mkConfig {
     root = "/var/lib/ast index%root";
@@ -70,6 +81,23 @@ if
   && isolatedService.ProtectSystem == "strict"
   && isolatedService.ProtectHome == "read-only"
   && isolatedService.RestrictAddressFamilies == [ "AF_UNIX" ]
+  && !(implicit.systemd.services ? ast-index-semantic-refresh)
+  && semanticRunner.unitConfig.ConditionPathExists == "/var/lib/ast-index/private-projects.json"
+  && semanticRunner.serviceConfig.PrivateNetwork
+  && semanticRunner.serviceConfig.UMask == "0077"
+  && semanticRunner.serviceConfig.StateDirectoryMode == "0700"
+  && semanticRunner.serviceConfig.StateDirectory == "ast-index/instance-a/semantic"
+  && semanticRunner.serviceConfig.ReadWritePaths == [ "/var/lib/ast-index/instance-a/semantic" ]
+  && semanticRunner.serviceConfig.TimeoutStartSec == 600
+  && nixpkgs.lib.hasInfix ''"--exclude" "/private/" "--exclude" "secrets/"'' semanticRunner.serviceConfig.ExecStart
+  && nixpkgs.lib.hasInfix ''"--semantic-exclude" "/private/" "--semantic-exclude" "secrets/"'' semantic.systemd.services.ast-index.serviceConfig.ExecStart
+  && semantic.systemd.timers.ast-index-semantic-refresh.timerConfig.OnUnitInactiveSec == "300s"
+  && nixpkgs.lib.hasInfix ''"--projects-file" "/var/lib/ast-index/private-projects.json"'' semanticRunner.serviceConfig.ExecStart
+  && nixpkgs.lib.hasInfix ''"--semantic-state-dir" "/var/lib/ast-index/instance-a/semantic"'' semantic.systemd.services.ast-index.serviceConfig.ExecStart
+  && builtins.any (
+    assertion:
+    !assertion.assertion && nixpkgs.lib.hasPrefix "services.astIndex.semantic" assertion.message
+  ) invalidSemantic.assertions
   && nixpkgs.lib.hasInfix ''"--state-dir" "/var/lib/ast-index/instance-a"'' isolatedService.ExecStart
   && builtins.any (
     assertion:

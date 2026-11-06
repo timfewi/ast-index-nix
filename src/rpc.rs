@@ -195,6 +195,7 @@ pub fn tool_definition() -> Value {
     `callers`/`callees` for one direction, `impact` for transitive callers, and `status` for index coverage. \
     Edges default to AST name resolution; `evidence: combined` opts into fresh validated semantic calls. \
     Ambiguous, conflicting or dynamic targets remain unresolved. \
+    For managed semantic state, select both workspace-relative `project` and `profile`; file paths then refer to that project. Queries never refresh an index. \
     Prefer this over grep/read loops, then read the file before editing.",
         "inputSchema": {
             "type": "object",
@@ -208,6 +209,8 @@ pub fn tool_definition() -> Value {
                     "type": "string",
                     "description": "Symbol name or qualified name (for search, describe, callers, callees, impact)."
                 },
+                "project": {"type":"string","description":"Explicit workspace-relative project (use . for root); requires profile and a configured semantic state base. Paths in this query are project-relative."},
+                "profile": {"enum":["rust","typescript"],"description":"Select an explicitly refreshed project/profile index; requires project. Missing/stale evidence never starts a producer."},
                 "file": {
                     "type": "string",
                     "description": "Relative file path; also disambiguates symbols for graph queries."

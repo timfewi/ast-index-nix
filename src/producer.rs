@@ -13,11 +13,10 @@ use std::{
 mod inputs;
 mod typescript;
 pub(crate) use inputs::Inventory;
-pub use inputs::Options;
-use inputs::Profile;
+pub use inputs::{Options, Profile};
 pub use typescript::typescript;
 
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     // Do not chmod an existing directory or follow an output symlink.
     for ancestor in path.ancestors() {
         if let Ok(meta) = fs::symlink_metadata(ancestor) {
@@ -38,7 +37,7 @@ fn private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
+pub(crate) fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
@@ -209,7 +208,11 @@ impl Snapshot {
             }))?,
         )?;
         let engine = crate::Engine::open_state_dir(&self.root, &self.state)?;
-        engine.index(&crate::IndexOptions::default())?;
+        engine.index(&crate::IndexOptions {
+            exclude: self.inventory.options.exclude.clone(),
+            exclude_prefix: self.inventory.options.exclude_prefix.clone(),
+            ..Default::default()
+        })?;
         Ok(crate::scip::import(
             &self.root,
             engine.store(),

@@ -28,6 +28,9 @@ requests, project execution, package discovery commands or Nix evaluation.
   `scip/calls/typescript.rs`; definitions alone are not dispatch proof.
 - `main.rs`, `rpc.rs`, `serve.rs`: transport adaptation, protocol negotiation,
   bounded framing, socket ownership and byte-preserving proxy.
+- `profiles.rs`: explicit runtime project/profile selections, fresh-input skip,
+  candidate publication and read-only managed routing. A separate state base
+  owns identity directories; queries never call the producer.
 
 ## State and coordination
 

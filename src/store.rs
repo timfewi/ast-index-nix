@@ -162,6 +162,24 @@ impl Store {
         Ok(store)
     }
 
+    /// Managed profile readers never create, migrate or write a database.
+    pub(crate) fn open_existing_state_dir(state_dir: &Path) -> Result<Self> {
+        let path = state_dir.join(crate::engine::DB_FILE);
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let store = Self {
+            conn,
+            path,
+            dedicated_state_dir: true,
+        };
+        if store.meta("schema_version")?.as_deref() != Some(&SCHEMA_VERSION.to_string()) {
+            return Err(Error::Invalid(
+                "managed profile schema changed; refresh semantic evidence".into(),
+            ));
+        }
+        Ok(store)
+    }
+
     /// The entire explicit state directory is excluded from source discovery.
     pub(crate) fn state_dir(&self) -> Option<&Path> {
         if self.dedicated_state_dir {
