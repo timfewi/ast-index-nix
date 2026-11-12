@@ -8,7 +8,7 @@
     "docs/requirements.md": "4ed2b5129a5ff653bc38693e0faf4a6bdefa2b1f1e3e3e60fc606eed3f283636",
     "docs/semantic-quality.md": "6638657b5d07bd61616d845e76493855ea016642113a3633ed07007e55c55efe",
     "flake.nix": "56b605c63fa8b6a2c4bfb2127fbd524a40570be9aba1028b7b5801065b91f3c4",
-    "nix/module.nix": "3345c4b4e29ce9a41b21ad94c067b2c3750e6d32b1a8da514446545048b4fc31",
+    "nix/module.nix": "561430097864c4d8eafbaeddcb5ed696317ec434dff73e2ace0aefcaf5398994",
     "src/bin/ast-index-semantic.rs": "bb5eaf2e366e7f7da08e717232659d82037029e45836ccc1cfb898dcc79697e5",
     "src/engine.rs": "afa42835e6219b819837ec8b265d0e37ed40a9bfc8d0927a4d2573c2da8aadef",
     "src/imports.rs": "7bed8ba29bb04829f5f123691f10d69d85822321c062b9b8435a55457cd12ad9",
@@ -40,7 +40,7 @@
     "src/store/history.rs": "c396ffff940288cf744bd9e57b129191fba81fc5e1d36b8352f2e4d4dffc96cd",
     "src/store/query.rs": "54335dd3c450d6a465977c19158aeaf0f422302ba8935d2bb08b8ee17dd73efa",
     "tests/integration.rs": "1ecb7fe568e148a95e1a6035f956e9a39ccf477e7c147db2fc9e6ca4a1e4ae52",
-    "tests/nix/module-eval.nix": "805d508dfed8b7799335822498e855d559a5838fb6c6edaecb7c8dac8033ee68",
+    "tests/nix/module-eval.nix": "c1c345a20e1ef486c614f925b77b63c7b7b64f8d1b299786c51c622c4566f9df",
     "tests/producer.rs": "ef44784c2fa1366373d7678bc4a46e2f944dcb87f8dce2616efaee13195c5ba2",
     "tests/producer/dependencies.rs": "967ee565a0d85c575a689cd6bd451158ea413a04e32d502261c449f631f8d638",
     "tests/producer/managed.rs": "4c03dd16a75413999f02ed395ad868b2499096e6e44a3f80e7f9c5d21e6b80cc",
@@ -63,7 +63,7 @@
           "sources": {}
         },
         "entry/2-ownership-and-flow-1": {
-          "fingerprint": "4f599626b45548557c7aaaf8a33435eadf9ca52c325cca20ee2889b9f23d58a7",
+          "fingerprint": "582ab09029583acdded1f40aade6301142289a7b6f75d768d4c34eb51aff3214",
           "sources": {
             "src/lang.rs": "2edb3cd644d3d94934b117b451f53713678e129fa43a0296a7cee3e660624d39",
             "src/parse.rs": "0a4d80e00f04fbd6dcc6b7b3c9671f988feb649c571a1c95e43a1c35bb3c02cd",
@@ -96,7 +96,7 @@
             "src/rpc.rs": "9623d78151b2c9bdcb29ad4108c23976145327d0aee5dd67847223ac77d1a346",
             "src/serve.rs": "38b9eec3b0402a20c120cdae00a73f86b37f50aae1b9c0e7ba5b0361ccdf6c45",
             "src/profiles.rs": "68ab8ab086719f933ece540c006aed88ea50f3a4446ae362b3a1439d9f96ac8e",
-            "nix/module.nix": "3345c4b4e29ce9a41b21ad94c067b2c3750e6d32b1a8da514446545048b4fc31"
+            "nix/module.nix": "561430097864c4d8eafbaeddcb5ed696317ec434dff73e2ace0aefcaf5398994"
           }
         },
         "entry/2-interfaces-and-limits-1": {
@@ -104,7 +104,7 @@
           "sources": {}
         },
         "entry/2-change-and-verify-1": {
-          "fingerprint": "b1ae0c08e9cdf12fd9a6c3a6aa91757bd8cd5bf234a88760604ef07393a0720c",
+          "fingerprint": "f323be6a360e79f8e1a50b387036fc8a92fc5eb74757d49966f9e266d7173451",
           "sources": {
             "docs/semantic-quality.md": "6638657b5d07bd61616d845e76493855ea016642113a3633ed07007e55c55efe",
             "tests/quality.rs": "f4e6d8c49b3cc31a807fd6ee79aceb5dcae993cd43972459162d6daee16a140b",
@@ -123,7 +123,7 @@
             "docs/development.md": "4eff6cb541953d286718f2f14343569195a142b75e6b679eef96a7458bd877f1",
             "tests/integration.rs": "1ecb7fe568e148a95e1a6035f956e9a39ccf477e7c147db2fc9e6ca4a1e4ae52",
             "tests/producer/managed.rs": "4c03dd16a75413999f02ed395ad868b2499096e6e44a3f80e7f9c5d21e6b80cc",
-            "tests/nix/module-eval.nix": "805d508dfed8b7799335822498e855d559a5838fb6c6edaecb7c8dac8033ee68"
+            "tests/nix/module-eval.nix": "c1c345a20e1ef486c614f925b77b63c7b7b64f8d1b299786c51c622c4566f9df"
           }
         }
       }
