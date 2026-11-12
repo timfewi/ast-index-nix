@@ -4,9 +4,15 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
 
-const MAX_FILES: usize = 2000;
-const MAX_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_FILE: u64 = 2 * 1024 * 1024;
+// Project sources keep the document budget. An explicitly selected dependency
+// tree has its own share: real vendored registries exceed the project bound.
+const PROJECT_FILES: usize = 2000;
+const PROJECT_BYTES: u64 = 128 * 1024 * 1024;
+const DEPENDENCY_FILES: usize = 14_000;
+const DEPENDENCY_BYTES: u64 = 384 * 1024 * 1024;
+const PROJECT_FILE: u64 = 2 * 1024 * 1024;
+// Published crates ship generated tables and bindings above the project bound.
+const DEPENDENCY_FILE: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +101,16 @@ impl Inventory {
             && self.options.exclude == exclude
     }
 
+    /// Upper bound of files this inventory may select.
+    pub(crate) fn file_budget(&self) -> usize {
+        PROJECT_FILES
+            + if self.options.dependencies {
+                DEPENDENCY_FILES
+            } else {
+                0
+            }
+    }
+
     pub(super) fn is_dependency(&self, file: &str) -> bool {
         Path::new(file).starts_with(self.profile.dependency_directory())
     }
@@ -148,9 +164,15 @@ impl Inventory {
         }
         let started = Instant::now();
         let mut visited = 0;
-        let mut total = 0;
         let mut files = BTreeMap::new();
         for (walk_root, dependency) in roots {
+            let (max_files, max_bytes, max_file) = if dependency {
+                (DEPENDENCY_FILES, DEPENDENCY_BYTES, DEPENDENCY_FILE)
+            } else {
+                (PROJECT_FILES, PROJECT_BYTES, PROJECT_FILE)
+            };
+            let mut count = 0;
+            let mut total = 0;
             let exclusions = crate::index::exclusions(
                 root,
                 &self.options.exclude,
@@ -209,7 +231,8 @@ impl Inventory {
                 if !self.profile.selects(path, dependency) {
                     continue;
                 }
-                ensure!(files.len() < MAX_FILES, "snapshot file budget exceeded");
+                ensure!(count < max_files, "snapshot file budget exceeded");
+                count += 1;
                 let relative = path
                     .strip_prefix(root)?
                     .to_str()
@@ -224,7 +247,7 @@ impl Inventory {
                     path.canonicalize()? == path,
                     "snapshot input path contains a symbolic link"
                 );
-                let bytes = crate::index::read_source(root, path, MAX_FILE.min(MAX_BYTES - total))?;
+                let bytes = crate::index::read_source(root, path, max_file.min(max_bytes - total))?;
                 total += bytes.len() as u64;
                 files.insert(relative.to_owned(), bytes);
             }
@@ -297,20 +320,28 @@ mod tests {
     }
 
     #[test]
-    fn project_and_dependency_files_share_one_inventory_limit() {
+    fn dependency_tree_has_its_own_budget_beside_the_project_bound() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         fs::write(root.join("Cargo.toml"), "[workspace]").unwrap();
         fs::write(root.join("Cargo.lock"), "version=4").unwrap();
         fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+        let fill = |directory: &Path, count: usize| {
+            fs::create_dir_all(directory).unwrap();
+            for index in 0..count {
+                fs::write(directory.join(format!("file{index}.rs")), "// synthetic\n").unwrap();
+            }
+        };
         let vendor = root.join("vendor");
-        fs::create_dir(&vendor).unwrap();
-        for index in 0..1998 {
-            fs::write(vendor.join(format!("file{index}.rs")), "// synthetic\n").unwrap();
-        }
+        // More dependency files than the whole project bound are accepted,
+        // as is a generated dependency source above the project file bound.
+        fill(&vendor.join("first"), PROJECT_FILES);
+        let generated = vec![b' '; PROJECT_FILE as usize + 1];
+        fs::write(vendor.join("first/generated.rs"), &generated).unwrap();
         let excluded = root.join("state");
         let disabled = Inventory::new(Profile::Rust, &Options::default());
         assert_eq!(disabled.capture(root, &excluded).unwrap().len(), 3);
+        assert_eq!(disabled.file_budget(), PROJECT_FILES);
         let enabled = Inventory::new(
             Profile::Rust,
             &Options {
@@ -318,13 +349,34 @@ mod tests {
                 ..Default::default()
             },
         );
+        assert_eq!(enabled.file_budget(), PROJECT_FILES + DEPENDENCY_FILES);
+        assert_eq!(
+            enabled.capture(root, &excluded).unwrap().len(),
+            3 + PROJECT_FILES + 1
+        );
+        let exceeded = |inventory: &Inventory| {
+            inventory
+                .capture(root, &excluded)
+                .unwrap_err()
+                .to_string()
+                .contains("snapshot file budget exceeded")
+        };
+        // The dependency share is bounded on its own.
+        fill(&vendor.join("second"), DEPENDENCY_FILES - PROJECT_FILES);
+        assert!(exceeded(&enabled));
+        fs::remove_dir_all(vendor.join("second")).unwrap();
+        // Dependencies do not widen the project share.
+        fs::write(root.join("generated.rs"), &generated).unwrap();
         assert!(
             enabled
                 .capture(root, &excluded)
                 .unwrap_err()
                 .to_string()
-                .contains("snapshot file budget exceeded")
+                .contains("source read budget exceeded")
         );
+        fs::remove_file(root.join("generated.rs")).unwrap();
+        fill(&root.join("src"), PROJECT_FILES);
+        assert!(exceeded(&enabled) && exceeded(&disabled));
     }
 
     #[test]

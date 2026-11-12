@@ -107,7 +107,7 @@ does not establish the same recall on arbitrary projects or languages.
   old definition-only artifacts; those remain raw navigation evidence only.
 - Import replaces the previous semantic artifact. Queries check all imported
   documents and supplied configuration/lock inputs, with a combined 2,000-file
-  bound; artifacts are capped at 4 MiB. Runner manifests also record the bounded
+  bound, or 16,000 files when the inventory selects the dependency tree; artifacts are capped at 4 MiB. Runner manifests also record the bounded
   input-selection policy. Queries compare the complete selected inventory,
   detecting new files as well as changed/deleted inputs. Legacy listed-file
   manifests keep their original freshness scope and cannot enable combined
@@ -189,8 +189,9 @@ The independent AST link count stays at 37 of 103 calls and five of five imports
 `--with-dependencies` selects an existing project-local `vendor/` for Rust or
 `node_modules/` for TypeScript. The same input policy governs snapshot creation,
 import validation and query freshness. It never selects arbitrary paths from
-artifact metadata. The normal 2,000-file, 128-MiB, 2-MiB/file and bounded traversal
-limits are shared by project and dependencies. Symlinked trees, missing inputs
+artifact metadata. Project inputs keep the normal 2,000-file, 128-MiB bound; the
+selected dependency tree has a separate 14,000-file, 384-MiB share with 8 MiB per
+file instead of 2 MiB. The traversal limit applies to both. Symlinked trees, missing inputs
 and unsupported configuration fail visibly; no installer or global cache scan runs.
 
 [Real producer tests](../tests/producer/dependencies.rs) use authored local

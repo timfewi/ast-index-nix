@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Materialize <project>/vendor for the offline Rust semantic profile.
+#
+# Crates are the fixed-output Nix fetches pinned by the project's Cargo.lock
+# checksums; nothing is installed and no project code runs. The directory is
+# copied as regular files, marked as generated and excluded from the project's
+# Git status through .git/info/exclude. Rerun after Cargo.lock changes.
+set -euo pipefail
+
+if [[ "$#" -eq 0 ]]; then
+  echo 'usage: scripts/vendor-rust-dependencies PROJECT...' >&2
+  exit 2
+fi
+repository=$(realpath -- "$(dirname -- "${BASH_SOURCE[0]}")/..")
+marker=.ast-index-vendor
+
+for project in "$@"; do
+  root=$(realpath -- "$project")
+  vendor="$root/vendor"
+  if [[ ! -f "$root/Cargo.toml" || ! -f "$root/Cargo.lock" ]]; then
+    echo "$root: needs Cargo.toml and Cargo.lock" >&2
+    exit 1
+  fi
+  if [[ "$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" != "$root" ]]; then
+    echo "$root: not the root of a Git checkout" >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "$root" ls-files -- vendor | head -n 1)" ]]; then
+    echo "$root: vendor/ is tracked; refusing to replace project files" >&2
+    exit 1
+  fi
+  if [[ -e "$vendor" && ! -f "$vendor/$marker" ]]; then
+    echo "$root: vendor/ exists without the $marker marker; refusing to replace it" >&2
+    exit 1
+  fi
+
+  # shellcheck disable=SC2016 # Nix expression, not shell expansion.
+  store=$(nix build --no-link --print-out-paths --impure \
+    --argstr repository "$repository" --argstr lock "$root/Cargo.lock" --expr '
+      { repository, lock }:
+      let pkgs = (builtins.getFlake repository).inputs.nixpkgs.legacyPackages.${builtins.currentSystem};
+      in pkgs.rustPlatform.importCargoLock { lockFile = /. + lock; }')
+
+  staging=$(git -C "$root" rev-parse --absolute-git-dir)/ast-index-vendor.staging
+  rm -rf -- "$staging"
+  mkdir -- "$staging"
+  for crate in "$store"/*/; do
+    cp -rL --no-preserve=mode,ownership -- "${crate%/}" "$staging/"
+  done
+  # Cargo reads configuration from the working directory upwards, never from a
+  # dependency; the offline profile still rejects any .cargo/config it meets.
+  find "$staging" -mindepth 2 -maxdepth 2 -type d -name .cargo -exec rm -rf -- {} +
+  : >"$staging/$marker"
+
+  if ! git -C "$root" check-ignore -q vendor/; then
+    exclude=$(cd -- "$root" && realpath -m -- "$(git rev-parse --git-path info/exclude)")
+    mkdir -p -- "$(dirname -- "$exclude")"
+    echo '/vendor/' >>"$exclude"
+  fi
+  rm -rf -- "$vendor"
+  mv -- "$staging" "$vendor"
+
+  crates=$(find "$vendor" -mindepth 1 -maxdepth 1 -type d | wc -l)
+  inputs=$(find "$vendor" -type f \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock -o -name .cargo-checksum.json \) | wc -l)
+  echo "$root: $crates crates, $inputs dependency inputs"
+done

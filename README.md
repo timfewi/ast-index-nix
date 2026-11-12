@@ -369,8 +369,16 @@ ast-index-semantic rust --root ./project --state-dir ./private-rust-state --with
 ast-index-semantic typescript --root ./project --state-dir ./private-ts-state --with-dependencies
 ```
 
-Project and dependency inputs share one bound: 2,000 files, 128 MiB total,
-2 MiB per file and a 50,000-entry/30-second traversal. Symlinked dependency trees
+Project inputs are bounded at 2,000 files and 128 MiB. An explicitly selected
+dependency tree has its own share of 14,000 files and 384 MiB, because real
+vendored registries exceed the project bound, with 8 MiB per dependency file
+against 2 MiB per project file; one 50,000-entry/30-second traversal covers both. Imported documents stay within the project
+bound. For a Rust project in a Git checkout,
+`scripts/vendor-rust-dependencies PROJECT...` materializes `vendor/` as regular
+files from the Nix fetches pinned by its `Cargo.lock` checksums, marks the
+directory as generated, drops the inert `.cargo/` directories some crates ship
+and adds `vendor/` to `.git/info/exclude`; rerun it after
+`Cargo.lock` changes. Symlinked dependency trees
 are rejected; no home cache is discovered, dependency downloaded or package
 script executed. Files/configuration/locks are checked before import and at query
 time, including additions/deletions. Legacy manifests without an inventory only

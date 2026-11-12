@@ -175,10 +175,17 @@ cannot enable combined calls. Exact source revisions remain in the lockfile.
 Checking only hashes of previously known files misses newly selected inputs.
 Runner manifests therefore carry a versioned, bounded inventory policy with no
 external path fields. Import and semantic queries reuse the same input selection
-and shared project/dependency budgets; additions, changes and deletions invalidate
+and budgets; additions, changes and deletions invalidate
 the result. Legacy manually supplied manifests retain listed-file validation
 for raw navigation; combined calls require a validated complete inventory.
 This does not execute a producer during a query or claim freshness after the read.
+
+Project and dependency inputs first shared one 2,000-file bound. Vendored
+registries of small real projects already hold more files than that, so every
+dependency-enabled refresh failed. The dependency tree now has its own
+14,000-file, 384-MiB share with 8 MiB per file for generated crate sources; the
+project share and the imported-document bound are
+unchanged, and an inventory without dependencies keeps the old total.
 
 Workspace AST state is not a semantic compiler project. Managed refresh therefore
 uses separate canonical-project/profile identities and an owner-supplied private

@@ -179,8 +179,14 @@ pub fn import(
     {
         return Err(invalid("manifest does not match SCIP artifact digest"));
     }
+    // Legacy listed-file manifests keep the project bound; an inventory states
+    // whether its selection includes the separately bounded dependency tree.
+    let input_budget = manifest
+        .as_ref()
+        .and_then(|m| m.inventory.as_ref())
+        .map_or(2000, crate::producer::Inventory::file_budget);
     if let Some(manifest) = &manifest {
-        if manifest.files.len() > 2000 {
+        if manifest.files.len() > input_budget {
             return Err(invalid("semantic input budget exceeded"));
         }
         if let Some(inventory) = &manifest.inventory {
@@ -320,7 +326,7 @@ pub fn import(
             ));
         }
         seen.extend(manifest.files.keys().cloned());
-        if seen.len() > 2000 {
+        if seen.len() > input_budget {
             return Err(invalid("combined semantic document/input budget exceeded"));
         }
     }
@@ -377,22 +383,25 @@ fn runtime_exclusion(store: &Store) -> &Path {
 }
 
 pub(crate) fn stale_files(root: &Path, store: &Store) -> Result<Vec<String>> {
-    let documents: Vec<(String, String)> = store
-        .conn
-        .prepare("SELECT file,hash FROM semantic_documents UNION SELECT file,hash FROM semantic_inputs ORDER BY file LIMIT 2001")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    if documents.is_empty() {
-        return Err(invalid("no SCIP artifact imported; use import-scip"));
-    }
-    if documents.len() > 2000 {
-        return Err(invalid("semantic document budget exceeded"));
-    }
     let inventory: Option<crate::producer::Inventory> = store
         .meta("semantic_input_inventory")?
         .map(|value| serde_json::from_str(&value))
         .transpose()?
         .flatten();
+    let budget = inventory
+        .as_ref()
+        .map_or(2000, crate::producer::Inventory::file_budget);
+    let documents: Vec<(String, String)> = store
+        .conn
+        .prepare("SELECT file,hash FROM semantic_documents UNION SELECT file,hash FROM semantic_inputs ORDER BY file LIMIT ?1")?
+        .query_map([budget as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    if documents.is_empty() {
+        return Err(invalid("no SCIP artifact imported; use import-scip"));
+    }
+    if documents.len() > budget {
+        return Err(invalid("semantic document budget exceeded"));
+    }
     if let Some(inventory) = inventory {
         let actual = inventory.hashes(root, runtime_exclusion(store))
             .map_err(|_| invalid("semantic input inventory is unavailable or exceeds its bounds; refresh semantic evidence"))?;

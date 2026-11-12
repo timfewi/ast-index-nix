@@ -10,7 +10,7 @@ case "${1:-fast}" in
     deadnix --fail .
     statix check .
     nixfmt --check flake.nix devenv.nix nix/module.nix tests/nix/module-eval.nix
-    shellcheck scripts/check
+    shellcheck scripts/check scripts/vendor-rust-dependencies
     nix flake check --all-systems --no-build --no-write-lock-file
     ;;
   *)

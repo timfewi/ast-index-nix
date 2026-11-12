@@ -64,7 +64,7 @@ remain untrusted data.
 Producer package assertions bind Rust/TypeScript profiles to validated versions;
 shared consumer toolchain updates require acceptance revalidation.
 Runner manifests additionally detect selected-input additions/deletions with the
-same inventory policy and shared source/dependency limits. Legacy listed-file
+same inventory policy; a selected dependency tree has its own file/byte share. Legacy listed-file
 manifests only recheck their declared inputs and cannot enable combined calls;
 no freshness guarantee persists
 after a query returns.
