@@ -84,6 +84,11 @@ if
   && !(implicit.systemd.services ? ast-index-semantic-refresh)
   && semanticRunner.unitConfig.ConditionPathExists == "/var/lib/ast-index/private-projects.json"
   && semanticRunner.serviceConfig.PrivateNetwork
+  &&
+    semanticRunner.serviceConfig.RestrictAddressFamilies == [
+      "AF_UNIX"
+      "AF_NETLINK"
+    ]
   && semanticRunner.serviceConfig.UMask == "0077"
   && semanticRunner.serviceConfig.StateDirectoryMode == "0700"
   && semanticRunner.serviceConfig.StateDirectory == "ast-index/instance-a/semantic"

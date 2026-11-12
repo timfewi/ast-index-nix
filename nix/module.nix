@@ -254,7 +254,12 @@ in
             ProtectSystem = "strict";
             ProtectHome = "read-only";
             ReadWritePaths = [ semanticState ];
-            RestrictAddressFamilies = [ "AF_UNIX" ];
+            # The producer sandbox unshares the network; bubblewrap brings up
+            # its loopback through a netlink socket and fails without it.
+            RestrictAddressFamilies = [
+              "AF_UNIX"
+              "AF_NETLINK"
+            ];
           }
           // lib.optionalAttrs (cfg.group != null) { Group = cfg.group; };
         };
